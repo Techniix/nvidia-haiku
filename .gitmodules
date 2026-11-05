@@ -1,7 +1,7 @@
 [submodule "mesa-nvk"]
 	path = mesa-nvk
-	url = https://github.com/X547/mesa.git
-	branch = mesa-nvk-r2
+	url = https://github.com/Techniix/mesa.git
+	branch = rtx5070-dev
 [submodule "mesa-zink"]
 	path = mesa-zink
 	url = https://github.com/X547/mesa.git
