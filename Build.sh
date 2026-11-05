@@ -5,12 +5,55 @@ baseDir="$PWD"
 buildBaseDir="$PWD/build.$(getarch)"
 installDir="$PWD/install.$(getarch)"
 
+jobs="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
+
+# Projects live either under source/ (the original author's layout) or at the
+# repository root (this repository as checked out, with its submodules).
+function projectDir {
+	if [ -d "$baseDir/source/$1" ]; then
+		echo "$baseDir/source/$1"
+	elif [ -d "$baseDir/$1" ]; then
+		echo "$baseDir/$1"
+	fi
+}
+
+# nv-kernel.o and nv-modeset-kernel.o come from NVIDIA's own Makefiles;
+# nvrm_sdk links them and expects the tree at nvrm_sdk/open-gpu-kernel-modules.
+function buildNvidiaObjects {
+	local nvDir
+	nvDir="$(projectDir open-gpu-kernel-modules)"
+	if [ -z "$nvDir" ]; then
+		echo "open-gpu-kernel-modules not found; run: git submodule update --init" >&2
+		exit 1
+	fi
+	local sdkDir
+	sdkDir="$(projectDir nvrm_sdk)"
+	if [ ! -e "$sdkDir/open-gpu-kernel-modules" ]; then
+		ln -s "$nvDir" "$sdkDir/open-gpu-kernel-modules"
+	fi
+	# NVK's RM backend reads NVIDIA's headers from here (libnvk in
+	# src/nouveau/vulkan/meson.build); they must match the RM being built.
+	local nvkDir
+	nvkDir="$(projectDir mesa-nvk)"
+	if [ -n "$nvkDir" ] && [ ! -e "$nvkDir/src/nouveau/vulkan/nvkmd/nvrm/open-gpu-kernel-modules" ]; then
+		ln -s "$nvDir" "$nvkDir/src/nouveau/vulkan/nvkmd/nvrm/open-gpu-kernel-modules"
+	fi
+	make -C "$nvDir/src/nvidia" -j"$jobs" ${NV_MAKE_ARGS:-}
+	make -C "$nvDir/src/nvidia-modeset" -j"$jobs" ${NV_MAKE_ARGS:-}
+}
+
 function buildProject {
 	projectName="$1"
 	shift
 	buildDir="$buildBaseDir/$projectName"
 
-	cd "$baseDir/source/$projectName"
+	local dir
+	dir="$(projectDir "$projectName")"
+	if [ -z "$dir" ]; then
+		echo "skipping $projectName: not present" >&2
+		return 0
+	fi
+	cd "$dir"
 
 	meson setup "$buildDir" \
 		-Dpkg_config_path="$installDir/develop/lib/pkgconfig" \
@@ -20,6 +63,9 @@ function buildProject {
 	ninja -C "$buildDir" install
 }
 
+if [ "${SKIP_NVIDIA_OBJECTS:-0}" != 1 ]; then
+	buildNvidiaObjects
+fi
 buildProject nvrm_sdk
 buildProject nvrm_cpp_sdk
 buildProject nvidia_gsp
