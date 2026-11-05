@@ -21,6 +21,7 @@ extern "C" {
 #include <interrupts.h>
 #include <vm/vm.h>
 #include <condition_variable.h>
+#include <DPC.h>
 
 #include <PCI.h>
 
@@ -1489,6 +1490,132 @@ int NV_API_CALL nv_stop_rc_timer(
     TRACE("nv_stop_rc_timer()\n");
     // TODO
     return 0;
+}
+
+
+//#pragma mark - Nano timers
+
+// RM's GSP-client build (PF_KERNEL_ONLY) sets
+// PDB_PROP_TMR_USE_OS_TIMER_FOR_CALLBACKS, so on every GSP GPU its timer
+// events are scheduled through these OS timers (osCreateNanoTimer etc.).
+//
+// The Haiku timer hook runs in interrupt context; it only queues a DPC. The
+// DPC calls rm_run_nano_timer_callback(), which takes no RM locks: it queues
+// a GPU-locked work item (os_queue_work_item) and returns, the same as
+// Linux's hrtimer path. Reference: kernel-open/nvidia/nv-nano-timer.c.
+struct nv_nano_timer: public DPCCallback {
+	timer fTimer {};
+	spinlock fLock = B_SPINLOCK_INITIALIZER;
+	nv_state_t *fNv = nullptr;
+	void *fTmrEvent = nullptr;
+
+	static DPCQueue *Queue()
+	{
+		return DPCQueue::DefaultQueue(B_URGENT_DISPLAY_PRIORITY);
+	}
+
+	static int32 TimerHook(timer *t)
+	{
+		nv_nano_timer *self = static_cast<nv_nano_timer*>(t->user_data);
+		// EALREADY (DPC still pending) is fine: one callback covers both
+		// expiries, as with a re-armed hrtimer.
+		Queue()->Add(self);
+		return B_HANDLED_INTERRUPT;
+	}
+
+	void DoDPC(DPCQueue *queue) final
+	{
+		(void)queue;
+		NV_STATUS status = rm_run_nano_timer_callback(nullptr, fNv, fTmrEvent);
+		if (status != NV_OK)
+			dprintf("nvidia_gsp: nano timer callback failed: %#" B_PRIx32 "\n", status);
+	}
+};
+
+void NV_API_CALL nv_create_nano_timer(
+    nv_state_t *nv,
+    void *pTmrEvent,
+    nv_nano_timer_t **pnv_nstimer
+)
+{
+	nv_nano_timer *nstimer = new(std::nothrow) nv_nano_timer();
+	if (nstimer == nullptr) {
+		dprintf("nvidia_gsp: can't allocate nano timer\n");
+		*pnv_nstimer = nullptr;
+		return;
+	}
+	nstimer->fTimer.user_data = nstimer;
+	nstimer->fNv = nv;
+	nstimer->fTmrEvent = pTmrEvent;
+	*pnv_nstimer = nstimer;
+}
+
+void NV_API_CALL nv_start_nano_timer(
+    nv_state_t *nv,
+    nv_nano_timer_t *nv_nstimer,
+    NvU64 time_ns
+)
+{
+	(void)nv;
+	if (nv_nstimer == nullptr)
+		return;
+
+	// Round up: firing early would make RM see the event as not yet due.
+	bigtime_t delay = (bigtime_t)((time_ns + 999) / 1000);
+
+	// add_timer() inserts unconditionally, so a re-arm must cancel first;
+	// the lock keeps concurrent start/cancel calls from double-inserting.
+	InterruptsSpinLocker locker(&nv_nstimer->fLock);
+	cancel_timer(&nv_nstimer->fTimer);
+	nv_nstimer->fTimer.user_data = nv_nstimer;
+	add_timer(&nv_nstimer->fTimer, nv_nano_timer::TimerHook, delay, B_ONE_SHOT_RELATIVE_TIMER);
+}
+
+// Returns true when no hook or DPC for this timer can still run.
+static bool nv_nano_timer_cancel_all(nv_nano_timer_t *nv_nstimer)
+{
+	{
+		// cancel_timer() also waits for a hook running on another CPU, so
+		// no new DPC can be queued once it returns.
+		InterruptsSpinLocker locker(&nv_nstimer->fLock);
+		cancel_timer(&nv_nstimer->fTimer);
+	}
+
+	if (!are_interrupts_enabled()) {
+		// DPCQueue::Cancel() may block waiting for a running callback.
+		dprintf("nvidia_gsp: nano timer cancelled from atomic context; "
+			"a pending callback may still run\n");
+		return false;
+	}
+	nv_nano_timer::Queue()->Cancel(nv_nstimer);
+	return true;
+}
+
+void NV_API_CALL nv_cancel_nano_timer(
+    nv_state_t *nv,
+    nv_nano_timer_t *nv_nstimer
+)
+{
+	(void)nv;
+	if (nv_nstimer == nullptr)
+		return;
+	nv_nano_timer_cancel_all(nv_nstimer);
+}
+
+void NV_API_CALL nv_destroy_nano_timer(
+    nv_state_t *nv,
+    nv_nano_timer_t *nv_nstimer
+)
+{
+	(void)nv;
+	if (nv_nstimer == nullptr)
+		return;
+	if (!nv_nano_timer_cancel_all(nv_nstimer)) {
+		// Freeing now could leave a queued DPC pointing at freed memory.
+		dprintf("nvidia_gsp: leaking nano timer %p to stay safe\n", nv_nstimer);
+		return;
+	}
+	delete nv_nstimer;
 }
 
 
