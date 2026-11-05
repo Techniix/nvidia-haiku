@@ -63,6 +63,9 @@ NvHaikuDriver::~NvHaikuDriver()
 {
 	dprintf("-NvHaikuDriver\n");
 
+	// Let queued RM work finish while its GPUs still exist.
+	fWorkQueue.Flush(true);
+
 	for (int32 i = 0; i < fDevices.Count(); i++) {
 		delete fDevices[i];
 	}
@@ -70,6 +73,9 @@ NvHaikuDriver::~NvHaikuDriver()
 	if (fControlDevice != nullptr) {
 		delete fControlDevice;
 	}
+
+	// Drains anything queued during device teardown, then stops the thread.
+	fWorkQueue.Shutdown();
 
 	if (fInitRmDone) {
 		rm_shutdown_rm(nullptr);
@@ -89,6 +95,10 @@ status_t NvHaikuDriver::Init()
 	CHECK_RET(get_module(B_PCI_MODULE_NAME, (module_info**)&fPCI));
 
 	fIntrSafePool.Maintain();
+
+	// RM may queue work items (deferred timer callbacks, error recovery)
+	// from the moment it initializes.
+	CHECK_RET(fWorkQueue.Init("nvidia work queue", B_URGENT_DISPLAY_PRIORITY));
 
 	if (!rm_init_rm(nullptr)) {
 		return B_ERROR;

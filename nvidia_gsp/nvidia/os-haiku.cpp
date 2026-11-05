@@ -1325,9 +1325,34 @@ NV_STATUS nv_get_syncpoint_aperture
     return NV_ERR_NOT_SUPPORTED;
 }
 
+// Haiku never creates per-device RM queues (nv->queue stays NULL), so every
+// work item runs on the driver's single queue; see WorkQueue.h.
+
+NV_STATUS NV_API_CALL os_queue_work_item(struct os_work_queue *queue, void *data)
+{
+	(void)queue;
+	status_t res = NvHaikuDriver::Instance().WorkQueue().Enqueue(data);
+	if (res == B_NO_MEMORY)
+		return NV_ERR_NO_MEMORY;
+	if (res < B_OK) {
+		dprintf("nvidia_gsp: os_queue_work_item: queue not running\n");
+		return NV_ERR_NOT_READY;
+	}
+	return NV_OK;
+}
+
+NV_STATUS NV_API_CALL os_flush_work_queue(struct os_work_queue *queue, NvBool is_unload)
+{
+	(void)queue;
+	if (NvHaikuDriver::Instance().WorkQueue().Flush(is_unload) < B_OK)
+		return NV_ERR_ILLEGAL_ACTION;
+	return NV_OK;
+}
+
 NvBool NV_API_CALL os_is_queue_flush_ongoing(struct os_work_queue *queue)
 {
-    return NV_FALSE;
+	(void)queue;
+	return NvHaikuDriver::Instance().WorkQueue().IsUnloadFlushOngoing();
 }
 
 NV_STATUS NV_API_CALL nv_set_primary_vga_status(
