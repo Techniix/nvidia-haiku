@@ -6,9 +6,12 @@ extern "C" {
 #include "nvtypes.h"
 #include "nv-gpu-info.h"
 }
+#include "nvUnixVersion.h"
 
 
-#define NV_HAIKU_MODULE_NAME "drivers/dev/graphics/nvidia_gsp/v570.86.16"
+// Versioned so nvidia_gsp_modeset only binds to an nvidia_gsp built from the
+// same RM release; follows the submodule's NV_VERSION_STRING.
+#define NV_HAIKU_MODULE_NAME "drivers/dev/graphics/nvidia_gsp/v" NV_VERSION_STRING
 
 
 /*
