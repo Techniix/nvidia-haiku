@@ -4,6 +4,7 @@ extern "C" {
 #include "nvlink/interface/nvlink_os.h"
 #include <nvrm_registry.h>
 }
+#include <nvUnixVersion.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1840,7 +1841,9 @@ void NV_API_CALL nv_i2c_del_adapter(nv_state_t *nv, void *data)
 
 //#pragma mark - firmware
 
-#define NV_FIRMWARE_PATH_FOR_FILENAME(name) "/firmware/nvidia/570.86.16/" name
+// GSP firmware is version-locked to RM, so the directory follows the RM
+// release this driver is built from (nvUnixVersion.h).
+#define NV_FIRMWARE_PATH_FOR_FILENAME(name) "/firmware/nvidia/" NV_VERSION_STRING "/" name
 
 static void HexDump(uint8 *data, uint32 size)
 {
@@ -1864,8 +1867,12 @@ static inline const char *nv_firmware_path(
 {
     if (fw_type == NV_FIRMWARE_TYPE_GSP)
     {
+        // Same mapping as NVIDIA's nv-firmware.h: all Ampere-and-later
+        // families, Blackwell (GB10X, GB20X) included, share gsp_ga10x.bin.
         switch (fw_chip_family)
         {
+            case NV_FIRMWARE_CHIP_FAMILY_GB10X:  // fall through
+            case NV_FIRMWARE_CHIP_FAMILY_GB20X:  // fall through
             case NV_FIRMWARE_CHIP_FAMILY_GH100:  // fall through
             case NV_FIRMWARE_CHIP_FAMILY_AD10X:  // fall through
             case NV_FIRMWARE_CHIP_FAMILY_GA10X:
@@ -1878,16 +1885,16 @@ static inline const char *nv_firmware_path(
 
             case NV_FIRMWARE_CHIP_FAMILY_END:  // fall through
             case NV_FIRMWARE_CHIP_FAMILY_NULL:
-                return "";
-
             default:
-                return "";
+                return nullptr;
         }
     }
     else if (fw_type == NV_FIRMWARE_TYPE_GSP_LOG)
     {
         switch (fw_chip_family)
         {
+            case NV_FIRMWARE_CHIP_FAMILY_GB10X:  // fall through
+            case NV_FIRMWARE_CHIP_FAMILY_GB20X:  // fall through
             case NV_FIRMWARE_CHIP_FAMILY_GH100:  // fall through
             case NV_FIRMWARE_CHIP_FAMILY_AD10X:  // fall through
             case NV_FIRMWARE_CHIP_FAMILY_GA10X:
@@ -1900,14 +1907,14 @@ static inline const char *nv_firmware_path(
 
             case NV_FIRMWARE_CHIP_FAMILY_END:  // fall through
             case NV_FIRMWARE_CHIP_FAMILY_NULL:
-                return "";
-
             default:
-                return "";
+                return nullptr;
         }
     }
 
-    return "";
+    // An empty suffix would make nv_get_firmware() open the data directory
+    // itself and hand it to GSP boot as "firmware".
+    return nullptr;
 }
 
 const void* NV_API_CALL nv_get_firmware(
@@ -1927,14 +1934,17 @@ const void* NV_API_CALL nv_get_firmware(
 		B_SYSTEM_DATA_DIRECTORY,
 	};
 
+	const char *familyName = nv_firmware_chip_family_to_string(fw_chip_family);
 	const char *suffix = nv_firmware_path(fw_type, fw_chip_family);
 	if (suffix == nullptr) {
+		dprintf("nvidia_gsp: no firmware for chip family %s (type %d)\n",
+			familyName != nullptr ? familyName : "unknown", (int)fw_type);
 		return nullptr;
 	}
 
 	FileDescriptorCloser file;
+	char path[B_PATH_NAME_LENGTH];
 	for (uint i = 0; i < sizeof(dataDirectories) / sizeof(directory_which); i++) {
-		char path[B_PATH_NAME_LENGTH];
 		if (find_directory(dataDirectories[i], -1, false, (char*)&path, B_PATH_NAME_LENGTH) < B_OK) {
 			continue;
 		}
@@ -1942,7 +1952,7 @@ const void* NV_API_CALL nv_get_firmware(
 		if (strlen(path) + strlen(suffix) > B_PATH_NAME_LENGTH - 1) {
 			continue;
 		}
-		strcat(path, nv_firmware_path(fw_type, fw_chip_family));
+		strcat(path, suffix);
 
 		file.SetTo(open(path, O_RDONLY));
 		if (file.IsSet()) {
@@ -1950,24 +1960,33 @@ const void* NV_API_CALL nv_get_firmware(
 		}
 	}
 
-	if (!file.IsSet())
+	if (!file.IsSet()) {
+		// The GSP log image is optional; only the main image is fatal.
+		if (fw_type == NV_FIRMWARE_TYPE_GSP)
+			dprintf("nvidia_gsp: firmware <data dir>%s not found\n", suffix);
 		return nullptr;
+	}
 
 	off_t size = lseek(file.Get(), 0, SEEK_END);
-	lseek(file.Get(), 0, SEEK_SET);
+	if (size <= 0) {
+		dprintf("nvidia_gsp: %s is empty or unreadable\n", path);
+		return nullptr;
+	}
 
 	ArrayDeleter<uint8> data(new(std::nothrow) uint8[size]);
-	memset(&data[0], 0, size);
 	if (!data.IsSet()) {
-		dprintf("[!] no memory\n");
+		dprintf("nvidia_gsp: no memory for firmware (%" B_PRIdOFF " bytes)\n", size);
 		return nullptr;
 	}
 
 	off_t readSize = read_pos(file.Get(), 0, &data[0], size);
 	if (readSize == -1 || readSize < size) {
-		dprintf("[!] can't read firmware\n");
+		dprintf("nvidia_gsp: can't read firmware %s\n", path);
 		return nullptr;
 	}
+
+	dprintf("nvidia_gsp: loaded %s (%" B_PRIdOFF " bytes, family %s)\n",
+		path, size, familyName != nullptr ? familyName : "unknown");
 
 	*fw_buf = &data[0];
 	*fw_size = size;
