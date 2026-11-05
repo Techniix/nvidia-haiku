@@ -1,14 +1,14 @@
 [submodule "mesa-nvk"]
 	path = mesa-nvk
-	url = https://github.com/X547/mesa.git
-	branch = mesa-nvk-r2
+	url = https://github.com/Techniix/mesa.git
+	branch = rtx5070-dev
 [submodule "mesa-zink"]
 	path = mesa-zink
 	url = https://github.com/X547/mesa.git
 	branch = haiku-zink
 [submodule "open-gpu-kernel-modules"]
 	path = open-gpu-kernel-modules
-	url = https://github.com/X547/open-gpu-kernel-modules.git
+	url = https://github.com/Techniix/open-gpu-kernel-modules.git
 	branch = 570.133.07-haiku
 [submodule "VideoStreamsWsi"]
 	path = VideoStreamsWsi

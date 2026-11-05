@@ -1,5 +1,9 @@
 # nvidia-haiku
 
+> **This is Techniix's fork of [X547/nvidia-haiku](https://github.com/X547/nvidia-haiku)**, used to bring up the GeForce RTX 5070 (Blackwell).
+> Branches: `rtx5070-dev` (570.133.07, submodules point at this account's forks), `test-a-570.86.16` (X547's 570.86.16 plus the fixes), and `x547/rtx5070` (the same changes as a clean series for upstream, submodule URLs unchanged).
+> NVK and NVIDIA-tree changes live in [Techniix/mesa](https://github.com/Techniix/mesa) (`rtx5070-dev`) and [Techniix/open-gpu-kernel-modules](https://github.com/Techniix/open-gpu-kernel-modules) (`570.133.07-haiku`).
+
 A hardware-accelerated graphics driver for NVIDIA GPUs on [Haiku](https://www.haiku-os.org), built on NVIDIA's [open GPU kernel modules](https://github.com/NVIDIA/open-gpu-kernel-modules). It provides modesetting, Vulkan through Mesa's NVK, and OpenGL through Zink.
 
 It targets GPUs that run NVIDIA's GSP firmware: Turing and newer.
