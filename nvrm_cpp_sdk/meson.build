@@ -1,5 +1,5 @@
 project('nvrm_cpp_sdk', 'cpp', 'c',
-	version: '570.86.16',
+	version: '570.133.07',
 	default_options: ['cpp_std=c++20']
 )
 

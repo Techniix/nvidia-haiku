@@ -1,5 +1,5 @@
 project('nvrm_sdk', 'cpp', 'c',
-	version: '570.86.16',
+	version: '570.133.07',
 	default_options: ['cpp_std=c++20']
 )
 
@@ -57,21 +57,21 @@ lib_nvkms_common = static_library('nvkms-common',
 )
 
 
-pkg.generate(lib_nv_kernel, version: '570.86.16')
-pkg.generate(lib_nv_modeset_kernel, version: '570.86.16')
-pkg.generate(lib_nvrm_common, version: '570.86.16', requires: ['nvrm'])
-pkg.generate(lib_nvkms_common, version: '570.86.16', requires: ['nvkms'])
+pkg.generate(lib_nv_kernel, version: '570.133.07')
+pkg.generate(lib_nv_modeset_kernel, version: '570.133.07')
+pkg.generate(lib_nvrm_common, version: '570.133.07', requires: ['nvrm'])
+pkg.generate(lib_nvkms_common, version: '570.133.07', requires: ['nvkms'])
 pkg.generate(
 	name: 'nvrm',
 	description: 'NVRM',
-	version: '570.86.16',
+	version: '570.133.07',
 	extra_cflags: ['-D_DEFAULT_SOURCE', '-DNV_PLATFORM_MAX_IOCTL_SIZE=16384'],
 	subdirs: ['nvrm-sdk/common', 'nvrm-sdk/nvidia']
 )
 pkg.generate(
 	name: 'nvkms',
 	description: 'NVKMS',
-	version: '570.86.16',
+	version: '570.133.07',
 	requires: ['nvrm'],
 	subdirs: ['nvrm-sdk/nvidia-modeset']
 )
