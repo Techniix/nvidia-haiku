@@ -295,9 +295,6 @@ int libspdm_hmac_sha384_final(void) {panic("[!!!] libspdm_hmac_sha384_final: not
 int nv_acquire_mmap_lock(void) {panic("[!!!] nv_acquire_mmap_lock: not implemented\n"); return -1;}
 int nv_allow_runtime_suspend(void) {panic("[!!!] nv_allow_runtime_suspend: not implemented\n"); return -1;}
 //int nv_audio_dynamic_power(void) {panic("[!!!] nv_audio_dynamic_power: not implemented\n"); return -1;}
-int nv_cancel_nano_timer(void) {panic("[!!!] nv_cancel_nano_timer: not implemented\n"); return -1;}
-int nv_create_nano_timer(void) {panic("[!!!] nv_create_nano_timer: not implemented\n"); return -1;}
-int nv_destroy_nano_timer(void) {panic("[!!!] nv_destroy_nano_timer: not implemented\n"); return -1;}
 int nv_disallow_runtime_suspend(void) {panic("[!!!] nv_disallow_runtime_suspend: not implemented\n"); return -1;}
 int nv_dynamic_power_available(void) {panic("[!!!] nv_dynamic_power_available: not implemented\n"); return -1;}
 int nv_get_all_mappings_revoked_locked(void) {panic("[!!!] nv_get_all_mappings_revoked_locked: not implemented\n"); return -1;}
@@ -313,7 +310,6 @@ int nv_revoke_gpu_mappings(void) {panic("[!!!] nv_revoke_gpu_mappings: not imple
 int nv_s2idle_pm_configured(void) {panic("[!!!] nv_s2idle_pm_configured: not implemented\n"); return -1;}
 //int nv_set_primary_vga_status(void) {panic("[!!!] nv_set_primary_vga_status: not implemented\n"); return -1;}
 int nv_set_safe_to_mmap_locked(void) {panic("[!!!] nv_set_safe_to_mmap_locked: not implemented\n"); return -1;}
-int nv_start_nano_timer(void) {panic("[!!!] nv_start_nano_timer: not implemented\n"); return -1;}
 int nvlink_get_platform_time(void) {panic("[!!!] nvlink_get_platform_time: not implemented\n"); return -1;}
 int nvswitch_os_get_os_version(void) {panic("[!!!] nvswitch_os_get_os_version: not implemented\n"); return -1;}
 int nvswitch_os_get_platform_time_epoch(void) {panic("[!!!] nvswitch_os_get_platform_time_epoch: not implemented\n"); return -1;}
