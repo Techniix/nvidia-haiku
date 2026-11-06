@@ -124,8 +124,20 @@ buildProject mesa-nvk \
 	-Dglvnd=disabled \
 	-Dglx=disabled \
 	-Ddisplay-info=disabled
+# Zink (OpenGL on Vulkan) needs libglvnd. HaikuPorts has a recipe but no
+# x86_64 package, and libglvnd replaces Haiku's OpenGL kit when installed, so
+# skip Zink when it is absent rather than failing: the kernel driver,
+# accelerant and Vulkan driver above do not need it.
+glvndPcPath="${DEPS_DIR:-$baseDir/deps.$(getarch)}/install/develop/lib/pkgconfig:/boot/data/packages/libglvnd/build.x86_64/install/develop/lib/pkgconfig"
+if [ -n "$(projectDir mesa-zink)" ] &&
+		! PKG_CONFIG_PATH="$glvndPcPath${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" pkg-config --exists libglvnd; then
+	echo
+	echo "Skipping mesa-zink (OpenGL): libglvnd not found. Everything else is built;"
+	echo "Zink is only needed for OpenGL testing."
+	exit 0
+fi
 buildProject mesa-zink \
-	-Dpkg_config_path="/boot/data/packages/libglvnd/build.x86_64/install/develop/lib/pkgconfig:/boot/data/packages/Vulkan/SPIRV-Tools/build.x86_64/install/lib/pkgconfig" \
+	-Dpkg_config_path="$glvndPcPath:/boot/data/packages/Vulkan/SPIRV-Tools/build.x86_64/install/lib/pkgconfig" \
 	-Dplatforms=haiku \
 	-Dgallium-opencl=disabled \
 	-Dgallium-rusticl=false \
