@@ -53,7 +53,9 @@ After changing the NVIDIA release, delete `build.<arch>`, `install.<arch>` and t
 
 ## Installing
 
-Copy the runtime parts of `install.<arch>` into a `non-packaged` folder, for example `~/config/non-packaged`:
+For testing, `tools/install-test.sh install.<arch> firmware/<version>` does this for you: it copies the runtime files and firmware into `~/config/non-packaged`, refuses to overwrite anything, and records a manifest so `tools/uninstall-test.sh` can remove exactly those files.
+
+By hand, copy the runtime parts of `install.<arch>` into a `non-packaged` folder, for example `~/config/non-packaged`:
 
 - `add-ons/kernel/drivers/bin/nvidia_gsp` and `nvidia_gsp_modeset`, with the `dev/` symlinks next to them
 - `add-ons/accelerants/nvidia_gsp.accelerant`
