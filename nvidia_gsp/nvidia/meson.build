@@ -1,4 +1,4 @@
-shared_library('nvidia_gsp',
+lib_nvidia_gsp = shared_library('nvidia_gsp',
 	'IntrSafePool.cpp',
 	'Driver.cpp',
 	'NvidiaModule.cpp',
@@ -28,8 +28,16 @@ shared_library('nvidia_gsp',
 		dep_nv_kernel,
 	],
 	name_prefix: '',
-	name_suffix: '',
 	gnu_symbol_visibility: 'hidden',
+)
+
+# Haiku kernel add-ons have no file extension. Meson 1.12 rejects
+# name_suffix: '', so build with the default suffix and install a copy
+# under the add-on's name; the binary is unchanged.
+custom_target('nvidia_gsp_addon',
+	input: lib_nvidia_gsp,
+	output: 'nvidia_gsp',
+	command: [find_program('cp'), '@INPUT@', '@OUTPUT@'],
 	install: true,
 	install_dir: 'add-ons/kernel/drivers/bin',
 )
