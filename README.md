@@ -52,7 +52,31 @@ Options: `JOBS=<n>` sets parallelism, `NV_MAKE_ARGS` passes extra flags to NVIDI
 
 After changing the NVIDIA release, delete `build.<arch>`, `install.<arch>` and the NVIDIA `_out` directories before rebuilding.
 
-## Installing
+## The quasar package
+
+`quasar` is a Haiku package with everything the driver needs, built from this repository: the kernel driver, accelerant, NVK, the Vulkan window-system layer, Zink for OpenGL with libglvnd, and the GSP firmware. It replaces X547's `nebula` package, so one copy of each driver is active. It installs into your home packages, so **Disable user add-ons** at boot still skips it.
+
+```sh
+tools/build-glvnd-deps.sh     # once: libglvnd, which Zink builds against
+./Build.sh                    # optimised build (-O2, assertions off); DEBUG_BUILD=1 for -O0
+tools/make-package.sh         # creates quasar-<version>-<revision>-x86_64.hpkg
+tools/install-package.sh --check
+tools/install-package.sh      # then reboot
+```
+
+`install-package.sh` does the following:
+
+1. Moves earlier non-packaged copies of the driver aside (`tools/install.sh --clean-only`).
+2. Keeps a copy of the `nebula` package and uninstalls it.
+3. Installs quasar with `pkgman install --home`, which also fetches the libraries it requires. If that fails, it reinstalls `nebula`.
+
+It refuses to replace a `nebula` that provides OpenGL with a quasar built without Zink, unless given `--without-opengl`.
+
+To undo: `tools/uninstall-package.sh --restore-nebula`, then reboot.
+
+`make-package.sh` strips debug information from every binary except the GSP firmware, which is ELF for the GPU's own processor and must stay as NVIDIA ships it. It also places the Vulkan and EGL vendor manifests next to their libraries, so they need no absolute paths.
+
+## Installing without a package
 
 After `Build.sh`, or from an unpacked release:
 

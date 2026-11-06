@@ -4,6 +4,9 @@
 #   tools/install.sh --check    report what would change; changes nothing
 #   tools/install.sh            install (asks before changing anything)
 #   tools/install.sh --yes      install without asking
+#   tools/install.sh --clean-only   only move earlier copies aside (used by
+#                               tools/install-package.sh before installing
+#                               the quasar package)
 #
 # What it does:
 #   1. Checks the system: Haiku x86_64, an NVIDIA GPU, the files to install,
@@ -28,8 +31,9 @@ assumeYes=0
 for arg in "$@"; do
 	case "$arg" in
 		--check) mode=check ;;
+		--clean-only) mode=clean ;;
 		--yes|-y) assumeYes=1 ;;
-		-h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
 	esac
 done
@@ -131,6 +135,8 @@ fi
 
 # ---- 2. files to install ---------------------------------------------------
 
+missingPkgs=()
+if [ "$mode" != clean ]; then
 section "Files to install"
 [ -n "$version" ] || fail "can't tell the NVIDIA version (no VERSION file or open-gpu-kernel-modules/version.mk)"
 if [ -d "$src" ]; then
@@ -158,7 +164,6 @@ fi
 # ---- 3. libraries ----------------------------------------------------------
 
 section "Libraries the driver needs"
-missingPkgs=()
 for entry in "${neededLibs[@]}"; do
 	lib="${entry%% *}"; pkg="${entry##* }"
 	found=""
@@ -167,6 +172,7 @@ for entry in "${neededLibs[@]}"; do
 	done
 	if [ -n "$found" ]; then ok "$lib"; else warn "$lib missing (provided by pkgman package $pkg)"; missingPkgs+=("$pkg"); fi
 done
+fi
 
 # ---- 4. earlier copies -----------------------------------------------------
 
@@ -177,7 +183,7 @@ addRemnant() { if [ -z "${seen[$1]:-}" ]; then seen[$1]=1; remnants+=("$1"); fi;
 
 ownFiles=()   # files of a previous install by this script: replaced, not backed up
 if [ -f "$manifest" ]; then
-	info "previous install by this installer ($(wc -l < "$manifest") files) will be replaced"
+	info "previous install by this installer ($(wc -l < "$manifest") files) will be $([ "$mode" = clean ] && echo removed || echo replaced)"
 	while read -r rel; do
 		if [ -e "$userNP/$rel" ] || [ -L "$userNP/$rel" ]; then
 			ownFiles+=("$userNP/$rel"); seen["$userNP/$rel"]=1
@@ -255,6 +261,8 @@ for dir in "${packageDirs[@]}"; do
 		if grep -qE "^[[:space:]]*Package[[:space:]]+$name[[:space:]]*\{" "$packageSettings" 2>/dev/null &&
 				sed -n "/Package[[:space:]]*$name/,/^}/p" "$packageSettings" | grep -q 'drivers/bin/nvidia_gsp$'; then
 			ok "  its kernel driver is disabled in $packageSettings"
+		elif [ "$mode" = clean ]; then
+			info "  its kernel driver is active; tools/install-package.sh replaces this package"
 		elif echo "$contents" | grep -q 'drivers/bin/nvidia_gsp'; then
 			fail "  its kernel driver is active and would compete with this one; uninstall it (pkgman uninstall $name) or block its kernel driver (see README)"
 		fi
@@ -270,20 +278,22 @@ for d in "$systemDir/add-ons/vulkan/icd.d" "$systemDir/data/vulkan/icd.d" \
 	done
 done
 section "Vulkan driver selection"
-if [ ${#otherIcds[@]} -gt 0 ]; then
+if [ "$mode" = clean ]; then
+	ok "not needed for the quasar package"
+elif [ ${#otherIcds[@]} -gt 0 ]; then
 	for j in "${otherIcds[@]}"; do info "another NVK: $j"; done
 	info "will set VK_DRIVER_FILES in $envFile so every application uses this build"
 else
 	ok "no other NVK installed; nothing to set"
 fi
 if [ -f "$envFile" ] && grep -qF "$envBegin" "$envFile"; then
-	info "an earlier nvidia-haiku block in $envFile will be replaced"
+	info "an earlier nvidia-haiku block in $envFile will be $([ "$mode" = clean ] && echo removed || echo replaced)"
 fi
 
 # ---- summary ---------------------------------------------------------------
 
 section "Summary"
-echo "  install into: $userNP (NVIDIA $version)"
+if [ "$mode" = clean ]; then echo "  clean up only"; else echo "  install into: $userNP (NVIDIA $version)"; fi
 echo "  errors: $errors, warnings: $warnings"
 if [ $errors -gt 0 ]; then
 	echo "  Fix the FAIL items above first; nothing was changed."
@@ -295,7 +305,7 @@ if [ "$mode" = check ]; then
 fi
 
 if [ $assumeYes = 0 ]; then
-	printf '\nInstall now? Earlier copies are moved to a backup, not deleted. [y/N] '
+	printf '\n%s now? Earlier copies are moved to a backup, not deleted. [y/N] ' "$([ "$mode" = clean ] && echo "Clean up" || echo Install)"
 	read -r answer
 	case "$answer" in y|Y|yes|YES) ;; *) echo "Nothing changed."; exit 0 ;; esac
 fi
@@ -328,6 +338,33 @@ for p in "${remnants[@]+"${remnants[@]}"}"; do
 	if [ -e "$p" ] || [ -L "$p" ]; then moveToBackup "$p"; fi
 done
 rm -f "$manifest"
+
+finishBackups() {
+	# Backups are restored newest first by tools/uninstall.sh --restore.
+	if [ -s "$backupList" ] || [ -f "$backup/UserSetupEnvironment" ]; then
+		echo "$backup" >> "$state/backups"
+	else
+		# Nothing was moved: remove this run's empty folder only.
+		rm -f "$backupList"; rmdir "$backup" 2>/dev/null || true
+		rmdir "$userHome/nvidia-haiku-backups" 2>/dev/null || true
+	fi
+}
+
+if [ "$mode" = clean ]; then
+	if [ -f "$envFile" ] && grep -qF "$envBegin" "$envFile"; then
+		cp "$envFile" "$backup/UserSetupEnvironment"
+		sed -i "\\|^$envBegin\$|,\\|^$envEnd\$|d" "$envFile"
+		[ -s "$envFile" ] || rm -f "$envFile"
+	fi
+	finishBackups
+	rm -f "$state/install.info"
+	rmdir "$state" 2>/dev/null || true
+	echo
+	if [ -s "$backupList" ]; then echo "Moved $(wc -l < "$backupList") earlier files to $backup."; fi
+	if [ ${#ownFiles[@]} -gt 0 ]; then echo "Removed the previous install (${#ownFiles[@]} files)."; fi
+	echo "Clean-up done."
+	exit 0
+fi
 
 # Payload: runtime files only.
 list="$(mktemp)"
@@ -370,14 +407,7 @@ if [ ${#otherIcds[@]} -gt 0 ]; then
 	} >> "$envFile"
 fi
 
-# Backups are restored newest first by tools/uninstall.sh --restore.
-if [ -s "$backupList" ] || [ -f "$backup/UserSetupEnvironment" ]; then
-	echo "$backup" >> "$state/backups"
-else
-	# Nothing was moved: remove this run's empty folder only.
-	rm -f "$backupList"; rmdir "$backup" 2>/dev/null || true
-	rmdir "$userHome/nvidia-haiku-backups" 2>/dev/null || true
-fi
+finishBackups
 {
 	echo "version=$version"
 	echo "installed=$stamp"
