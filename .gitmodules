@@ -1,7 +1,7 @@
 [submodule "mesa-nvk"]
 	path = mesa-nvk
-	url = https://github.com/Techniix/mesa.git
-	branch = rtx5070-dev
+	url = https://github.com/X547/mesa.git
+	branch = nvrm-event-sync-r4
 [submodule "mesa-zink"]
 	path = mesa-zink
 	url = https://github.com/X547/mesa.git

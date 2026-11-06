@@ -3,6 +3,7 @@
 > **This is Techniix's fork of [X547/nvidia-haiku](https://github.com/X547/nvidia-haiku)**, used to bring up the GeForce RTX 5070 (Blackwell).
 > Branches: `rtx5070-dev` (570.133.07, submodules point at this account's forks), `test-a-570.86.16` (X547's 570.86.16 plus the fixes), and `x547/rtx5070-v2` (the same changes as a clean series for upstream, submodule URLs unchanged; `x547/rtx5070` is an older ordering).
 > Prebuilt test builds are on the [Releases](https://github.com/Techniix/nvidia-haiku/releases) page.
+> **`rtx5070-event-sync`** (this branch, experimental) builds NVK from X547's `nvrm-event-sync-r4` Mesa branch (Mesa 26.2.2): submissions no longer wait for the GPU to finish. The shader-model fix is applied from `tools/patches/mesa-nvk/`.
 > NVK and NVIDIA-tree changes live in [Techniix/mesa](https://github.com/Techniix/mesa) (`rtx5070-dev`) and [Techniix/open-gpu-kernel-modules](https://github.com/Techniix/open-gpu-kernel-modules) (`570.133.07-haiku`).
 
 A hardware-accelerated graphics driver for NVIDIA GPUs on [Haiku](https://www.haiku-os.org), built on NVIDIA's [open GPU kernel modules](https://github.com/NVIDIA/open-gpu-kernel-modules). It provides modesetting, Vulkan through Mesa's NVK, and OpenGL through Zink.

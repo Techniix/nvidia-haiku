@@ -124,6 +124,24 @@ if [ -n "$(projectDir mesa-nvk)" ] && [ ! -e "$clcDeps/share/pkgconfig/libclc.pc
 	echo "libclc not found: run tools/build-clc-deps.sh first (NVK needs it to build)." >&2
 	exit 1
 fi
+# Local fixes for submodules live in tools/patches/<submodule>/*.patch and are
+# applied in order on top of the pinned commit; already-applied patches are
+# skipped, so this is safe to run on every build.
+function applyPatches {
+	local sub="$1" dir patch
+	dir="$(projectDir "$sub")"
+	[ -n "$dir" ] && [ -d "$baseDir/tools/patches/$sub" ] || return 0
+	for patch in "$baseDir/tools/patches/$sub"/*.patch; do
+		[ -e "$patch" ] || continue
+		if git -C "$dir" apply --reverse --check "$patch" 2>/dev/null; then
+			continue
+		fi
+		echo "Applying $(basename "$patch") to $sub"
+		git -C "$dir" apply "$patch"
+	done
+}
+applyPatches mesa-nvk
+
 # Newer NVK (X547's event-sync branch) takes the NVIDIA tree and release as
 # options and refuses to start against a kernel driver from another release.
 nvkArgs=()
