@@ -124,7 +124,16 @@ if [ -n "$(projectDir mesa-nvk)" ] && [ ! -e "$clcDeps/share/pkgconfig/libclc.pc
 	echo "libclc not found: run tools/build-clc-deps.sh first (NVK needs it to build)." >&2
 	exit 1
 fi
-buildProject mesa-nvk \
+# Newer NVK (X547's event-sync branch) takes the NVIDIA tree and release as
+# options and refuses to start against a kernel driver from another release.
+nvkArgs=()
+nvkDir="$(projectDir mesa-nvk)"
+nvTree="$(projectDir open-gpu-kernel-modules)"
+if [ -n "$nvkDir" ] && grep -q "'nvk-nvrm-source-path'" "$nvkDir/meson.options" 2>/dev/null; then
+	nvVersion="$(sed -n 's/^NVIDIA_VERSION *= *//p' "$nvTree/version.mk" | tr -d '[:space:]')"
+	nvkArgs+=(-Dnvk-nvrm-source-path="$nvTree" -Dnvk-nvrm-version="$nvVersion")
+fi
+buildProject mesa-nvk "${nvkArgs[@]}" \
 	-Dpkg_config_path="$clcDeps/share/pkgconfig:$clcDeps/lib/pkgconfig:/boot/data/packages/llvm-project/build-libclc.x86_64/install/share/pkgconfig:/boot/data/packages/SPIRV-LLVM-Translator/build.x86_64/install/lib/pkgconfig:/boot/data/packages/Vulkan/SPIRV-Tools/build.x86_64/install/lib/pkgconfig" \
 	-Dgallium-drivers= \
 	-Dvulkan-drivers=nouveau \
