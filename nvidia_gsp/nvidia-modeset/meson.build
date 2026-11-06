@@ -1,4 +1,4 @@
-shared_library('nvidia_gsp_modeset',
+lib_nvidia_gsp_modeset = shared_library('nvidia_gsp_modeset',
 	'nvkms-haiku.cpp',
 	'KmsDriver.cpp',
 	'KmsDevice.cpp',
@@ -24,8 +24,16 @@ shared_library('nvidia_gsp_modeset',
 		dep_nvkms,
 	],
 	name_prefix: '',
-	name_suffix: '',
 	gnu_symbol_visibility: 'hidden',
+)
+
+# Haiku kernel add-ons have no file extension. Meson 1.12 rejects
+# name_suffix: '', so build with the default suffix and install a copy
+# under the add-on's name; the binary is unchanged.
+custom_target('nvidia_gsp_modeset_addon',
+	input: lib_nvidia_gsp_modeset,
+	output: 'nvidia_gsp_modeset',
+	command: [find_program('cp'), '@INPUT@', '@OUTPUT@'],
 	install: true,
 	install_dir: 'add-ons/kernel/drivers/bin',
 )
