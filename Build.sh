@@ -92,7 +92,19 @@ buildProject nvrm_cpp_sdk
 buildProject nvidia_gsp
 buildProject accelerant
 buildProject NvKmsTest
-buildProject VideoStreamsWsi
+# Current Haiku's <pthread.h> only defines the _NP spelling of the
+# recursive mutex initializer, which VideoStreamsWsi uses unsuffixed. Map
+# it only when the compiler lacks the plain name, so older Haiku is unchanged.
+function hasPthreadMacro {
+	printf '#include <pthread.h>\n#ifndef %s\n#error missing\n#endif\n' "$1" |
+		c++ -fsyntax-only -x c++ - >/dev/null 2>&1
+}
+vswArgs=()
+if ! hasPthreadMacro PTHREAD_RECURSIVE_MUTEX_INITIALIZER &&
+		hasPthreadMacro PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP; then
+	vswArgs+=(-Dcpp_args=-DPTHREAD_RECURSIVE_MUTEX_INITIALIZER=PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP)
+fi
+buildProject VideoStreamsWsi "${vswArgs[@]}"
 buildProject mesa-nvk \
 	-Dpkg_config_path="/boot/data/packages/llvm-project/build-libclc.x86_64/install/share/pkgconfig:/boot/data/packages/SPIRV-LLVM-Translator/build.x86_64/install/lib/pkgconfig:/boot/data/packages/Vulkan/SPIRV-Tools/build.x86_64/install/lib/pkgconfig" \
 	-Dgallium-drivers= \
