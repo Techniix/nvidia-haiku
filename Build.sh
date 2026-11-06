@@ -55,9 +55,30 @@ function buildProject {
 	fi
 	cd "$dir"
 
-	meson setup "$buildDir" \
-		-Dpkg_config_path="$installDir/develop/lib/pkgconfig" \
-		-Dprefix="$installDir" "$@"
+	# pkg.generate() writes .pc files to <prefix>/<libdir>/pkgconfig
+	# (lib/pkgconfig on Haiku). Meson keeps only the last -Dpkg_config_path,
+	# so merge any project-specific paths into one option rather than letting
+	# them replace the install directory's.
+	local pcPath="$installDir/lib/pkgconfig,$installDir/develop/lib/pkgconfig"
+	local args=()
+	local arg
+	for arg in "$@"; do
+		case "$arg" in
+			-Dpkg_config_path=*) pcPath="$pcPath,${arg#-Dpkg_config_path=}" ;;
+			*) args+=("$arg") ;;
+		esac
+	done
+
+	# On an already-configured directory, plain "meson setup" ignores new
+	# options; --reconfigure applies them.
+	local reconfigure=()
+	if [ -f "$buildDir/meson-private/coredata.dat" ]; then
+		reconfigure=(--reconfigure)
+	fi
+
+	meson setup "${reconfigure[@]}" "$buildDir" \
+		-Dpkg_config_path="$pcPath" \
+		-Dprefix="$installDir" "${args[@]}"
 
 	ninja -C "$buildDir"
 	ninja -C "$buildDir" install
