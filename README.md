@@ -54,17 +54,27 @@ After changing the NVIDIA release, delete `build.<arch>`, `install.<arch>` and t
 
 ## Installing
 
-For testing, `tools/install-test.sh install.<arch> firmware/<version>` does this for you: it copies the runtime files and firmware into `~/config/non-packaged`, refuses to overwrite anything, and records a manifest so `tools/uninstall-test.sh` can remove exactly those files.
+After `Build.sh`, or from an unpacked release:
 
-By hand, copy the runtime parts of `install.<arch>` into a `non-packaged` folder, for example `~/config/non-packaged`:
+```sh
+tools/install.sh --check   # shows what it would change; changes nothing
+tools/install.sh           # installs, after asking
+```
 
-- `add-ons/kernel/drivers/bin/nvidia_gsp` and `nvidia_gsp_modeset`, with the `dev/` symlinks next to them
-- `add-ons/accelerants/nvidia_gsp.accelerant`
-- the Mesa libraries and Vulkan ICD files
+The installer:
 
-Then copy the firmware to `data/firmware/nvidia/<version>/` in the same folder. The driver searches the user non-packaged, user, system non-packaged and system data directories, in that order. Reboot to load the driver.
+- checks for Haiku x86_64, an NVIDIA GPU, the build, its firmware and checksums, and the libraries NVK links against. It offers to fetch missing libraries with `pkgman`;
+- finds earlier copies of the driver in either `non-packaged` folder (a previous install, a test install, hand-copied files, old firmware) and moves them into `~/nvidia-haiku-backups/<date>`. Nothing is deleted except the files of its own previous install;
+- installs the kernel driver, accelerant, NVK, the Vulkan window-system layer and the GSP firmware into `~/config/non-packaged`, recording each file in `~/config/settings/nvidia-haiku/manifest`;
+- if a package also installs an NVK (for example `nebula`), sets `VK_DRIVER_FILES` in `~/config/settings/boot/UserSetupEnvironment`, so every application uses this build after a reboot.
 
-To recover from a driver that won't start: hold Space while booting and pick **Disable user add-ons** or **Use fail-safe graphics driver** in *Safe mode options*.
+It never modifies packages or `/boot/system/settings`. It stops if another package's `nvidia_gsp` kernel driver is active, since two copies would compete.
+
+`tools/uninstall.sh` removes exactly what was installed, along with the Vulkan setting. `tools/uninstall.sh --restore` also puts back everything the installer moved aside, returning the system to how it was before the first install.
+
+If Haiku doesn't reach the desktop, hold Space while booting and pick **Disable user add-ons** (or **Use fail-safe graphics driver**) in *Safe mode options*, then run `tools/uninstall.sh`.
+
+The firmware search order is user non-packaged, user, system non-packaged, then system data directories. `tools/install-test.sh` is the older, minimal installer, kept for development.
 
 ## Debugging
 
