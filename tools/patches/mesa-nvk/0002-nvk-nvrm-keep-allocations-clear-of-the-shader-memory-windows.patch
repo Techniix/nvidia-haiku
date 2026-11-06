@@ -1,0 +1,99 @@
+From c23bcc29752e71108ad0679bf8edf9391b978de7 Mon Sep 17 00:00:00 2001
+From: Techniix <Techniix@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 10:46:39 -0500
+Subject: [PATCH] nvk/nvrm: keep allocations clear of the shader memory windows
+
+NVK places the compute local memory window at 0xff000000 and, on Hopper
+and later, the shared memory window at 4 GiB, and assumes nothing is
+mapped there. The nouveau backend allocates VAs from the top of its heap
+so it never comes near them, but RM hands out VAs from the bottom of the
+address space. Once a game has enough memory in use, a buffer lands
+inside a window, and a shader that touches it dies with an SM warp
+exception (Invalid Address Space) that hangs the channel.
+
+On an RTX 5070 this hit NVK's query copy shader whenever OpenCE (Halo)
+loaded a level with occlusion queries on (found and fixed on the Mesa
+25.3 branch; ported here).
+
+Restrict VA allocations to [8 GiB, 512 GiB) with USE_BEGIN_END, and
+report that range as the device's va_start/va_end. On this branch the
+EDB buffer-view cache (nvk_edb_bview_cache.c) also sizes its ranges from
+va_start/va_end, which were left at 0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013MHBHjE9UBE9RaQDv8VywF
+---
+ src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h     |  8 ++++++++
+ src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c |  2 ++
+ src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c  | 12 ++++++++++++
+ 3 files changed, 22 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
+index 7d49a41737b..203426eeae2 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
+@@ -19,6 +19,14 @@
+ #include "nvtypes.h"
+ #include "ctrl/ctrl2080/ctrl2080fb.h" // NV2080_CTRL_CMD_FB_GET_SEMAPHORE_SURFACE_LAYOUT
+ 
++/* The part of the GPU's VA space NVK's buffers go in. It starts above 8 GiB
++ * so nothing is ever mapped under the shader local and shared memory windows
++ * NVK places at 0xff000000 and (Hopper and later) 4 GiB; see
++ * nvkmd_nvrm_alloc_va(). It ends where the nouveau backend's does.
++ */
++#define NVKMD_NVRM_VA_START (1ull << 33)
++#define NVKMD_NVRM_VA_END   (1ull << 39)
++
+ struct nvrm_ws_bo;
+ struct nvrm_ws_context;
+ struct nvrm_ws_device;
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
+index 43f501e493b..07190ff877c 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
+@@ -27,6 +27,8 @@ nvkmd_nvrm_create_dev(struct nvkmd_pdev *_pdev,
+ 
+    dev->base.ops = &nvkmd_nvrm_dev_ops;
+    dev->base.pdev = &pdev->base;
++   dev->base.va_start = NVKMD_NVRM_VA_START;
++   dev->base.va_end = NVKMD_NVRM_VA_END;
+ 
+    list_inithead(&dev->base.mems);
+    simple_mtx_init(&dev->base.mems_mutex, mtx_plain);
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c
+index b730fe88f1f..9e920e66935 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_va.c
+@@ -47,17 +47,29 @@ nvkmd_nvrm_alloc_va(struct nvkmd_dev *_dev,
+    va->base.size_B = size_B;
+    util_dynarray_init(&va->bound, NULL);
+ 
++	/* Keep every allocation above the shader memory windows. NVK puts the
++	 * compute local memory window at 0xff000000 and, on Hopper and later, the
++	 * shared memory window at 4 GiB (nvk_cmd_dispatch.c, nvk_cmd_draw.c), and
++	 * relies on nothing being mapped there. The nouveau backend allocates
++	 * from the top of its heap, so it never gets near them; RM allocates
++	 * from the bottom of the VA space, so once enough memory is in use a
++	 * buffer lands inside a window. A shader that then reads or writes that
++	 * buffer (NVK's own query copy shader, for one) dies with an SM warp
++	 * exception, "Invalid Address Space", and the channel stops. */
+ 	NvHandle hMemoryVirt = 0;
+ 	NV_MEMORY_ALLOCATION_PARAMS params = {
+ 		.owner = pdev->hClient,
+ 		.type = NVOS32_TYPE_IMAGE,
+ 		.flags =
+ 			NVOS32_ALLOC_FLAGS_VIRTUAL |
++			NVOS32_ALLOC_FLAGS_USE_BEGIN_END |
+ 			((align_B != 0) ? NVOS32_ALLOC_FLAGS_ALIGNMENT_FORCE : 0) |
+ 			/* Sparse residency: unmapped pages must be non-faulting (read as
+ 			 * zero) rather than raising a GPU page fault, and UNMAP restores
+ 			 * that sparse PTE instead of a faulting hole. */
+ 			((flags & NVKMD_VA_SPARSE) ? NVOS32_ALLOC_FLAGS_SPARSE : 0),
++		.rangeLo = NVKMD_NVRM_VA_START,
++		.rangeHi = NVKMD_NVRM_VA_END - 1,
+ 		.size = size_B,
+ 		.alignment = align_B,
+ 		.hVASpace = pdev->hVaSpace,
+-- 
+2.43.0
+
