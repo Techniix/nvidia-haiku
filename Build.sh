@@ -7,6 +7,16 @@ installDir="$PWD/install.$(getarch)"
 
 jobs="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 
+# Optimised builds by default: -O2 with assertions off, keeping debug info
+# (tools/make-package.sh strips it). DEBUG_BUILD=1 gives -O0 with
+# assertions, as the original Build.sh did. NVIDIA's own objects are always
+# built by NVIDIA's Makefiles at -O2.
+if [ "${DEBUG_BUILD:-0}" = 1 ]; then
+	buildTypeArgs=(-Dbuildtype=debug -Db_ndebug=false)
+else
+	buildTypeArgs=(-Dbuildtype=debugoptimized -Doptimization=2 -Db_ndebug=true)
+fi
+
 # Projects live either under source/ (the original author's layout) or at the
 # repository root (this repository as checked out, with its submodules).
 function projectDir {
@@ -78,7 +88,7 @@ function buildProject {
 
 	meson setup "${reconfigure[@]}" "$buildDir" \
 		-Dpkg_config_path="$pcPath" \
-		-Dprefix="$installDir" "${args[@]}"
+		-Dprefix="$installDir" "${buildTypeArgs[@]}" "${args[@]}"
 
 	ninja -C "$buildDir"
 	ninja -C "$buildDir" install
@@ -124,16 +134,17 @@ buildProject mesa-nvk \
 	-Dglvnd=disabled \
 	-Dglx=disabled \
 	-Ddisplay-info=disabled
-# Zink (OpenGL on Vulkan) needs libglvnd. HaikuPorts has a recipe but no
-# x86_64 package, and libglvnd replaces Haiku's OpenGL kit when installed, so
-# skip Zink when it is absent rather than failing: the kernel driver,
-# accelerant and Vulkan driver above do not need it.
-glvndPcPath="${DEPS_DIR:-$baseDir/deps.$(getarch)}/install/develop/lib/pkgconfig:/boot/data/packages/libglvnd/build.x86_64/install/develop/lib/pkgconfig"
+# Zink (OpenGL on Vulkan) builds against libglvnd's headers. HaikuPorts has
+# no x86_64 libglvnd package; tools/build-glvnd-deps.sh builds one into
+# deps.<arch> for the build only. Without it, skip Zink rather than fail: the
+# kernel driver, accelerant and Vulkan driver above do not need it.
+glvndDeps="${DEPS_DIR:-$baseDir/deps.$(getarch)}/install"
+glvndPcPath="$glvndDeps/lib/pkgconfig:$glvndDeps/develop/lib/pkgconfig:/boot/data/packages/libglvnd/build.x86_64/install/develop/lib/pkgconfig"
 if [ -n "$(projectDir mesa-zink)" ] &&
 		! PKG_CONFIG_PATH="$glvndPcPath${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" pkg-config --exists libglvnd; then
 	echo
-	echo "Skipping mesa-zink (OpenGL): libglvnd not found. Everything else is built;"
-	echo "Zink is only needed for OpenGL testing."
+	echo "Skipping mesa-zink (OpenGL): libglvnd not found. Everything else is built."
+	echo "Run tools/build-glvnd-deps.sh, then Build.sh again, to build Zink too."
 	exit 0
 fi
 buildProject mesa-zink \
