@@ -8,6 +8,7 @@
 # - copies runtime files only (develop/ headers and static libs are skipped)
 # - refuses to overwrite any existing file
 # - copies the GSP firmware to data/firmware/nvidia/<version>/
+# - makes Vulkan ICD library paths relative to the installed manifest
 # - writes a manifest; uninstall-test.sh removes exactly those files
 set -euo pipefail
 
@@ -58,6 +59,12 @@ while read -r rel; do
 	mkdir -p "$DEST/$(dirname "$rel")"
 	case $rel in
 		data/firmware/nvidia/*) cp "$FW/$(basename "$rel")" "$DEST/$rel" ;;
+		data/vulkan/icd.d/*.json)
+			# Mesa writes an absolute library_path into the build's install
+			# directory; point it at the installed copy, relative to the
+			# manifest, so the install does not depend on the build tree.
+			sed -E 's#"library_path": *"[^"]*/([^/"]+)"#"library_path": "../../../lib/\1"#' \
+				"$SRC/$rel" > "$DEST/$rel" ;;
 		*) cp -P "$SRC/$rel" "$DEST/$rel" ;;
 	esac
 	echo "$rel" >> "$MANIFEST"
