@@ -25,7 +25,10 @@ NvKmsDevice::NvKmsDevice(NvKmsApi &nvKmsApi, NvU32 rmDeviceId):
 #else
 	params.request.deviceId.rmDeviceId = rmDeviceId;
 #endif
-	assert(fNvKmsApi.Control(NVKMS_IOCTL_ALLOC_DEVICE, &params, sizeof(params)) >= 0);
+	// The call must stay outside assert(): with NDEBUG it would not run.
+	int res = fNvKmsApi.Control(NVKMS_IOCTL_ALLOC_DEVICE, &params, sizeof(params));
+	assert(res >= 0);
+	(void)res;
 	memcpy(&fInfo, &params.reply, sizeof(fInfo));
 }
 
@@ -33,5 +36,7 @@ NvKmsDevice::~NvKmsDevice()
 {
 	NvKmsFreeDeviceParams params {};
 	params.request.deviceHandle = fInfo.deviceHandle;
-	assert(fNvKmsApi.Control(NVKMS_IOCTL_FREE_DEVICE, &params, sizeof(params)) >= 0);
+	int res = fNvKmsApi.Control(NVKMS_IOCTL_FREE_DEVICE, &params, sizeof(params));
+	assert(res >= 0);
+	(void)res;
 }
