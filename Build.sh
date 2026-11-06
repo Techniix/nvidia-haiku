@@ -105,8 +105,17 @@ if ! hasPthreadMacro PTHREAD_RECURSIVE_MUTEX_INITIALIZER &&
 	vswArgs+=(-Dcpp_args=-DPTHREAD_RECURSIVE_MUTEX_INITIALIZER=PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP)
 fi
 buildProject VideoStreamsWsi "${vswArgs[@]}"
+
+# libclc and SPIRV-LLVM-Translator are not in HaikuPorts; tools/build-clc-deps.sh
+# builds them here. The /boot/data/packages paths are the original author's.
+clcDeps="${DEPS_DIR:-$baseDir/deps.$(getarch)}/install"
+if [ -n "$(projectDir mesa-nvk)" ] && [ ! -e "$clcDeps/share/pkgconfig/libclc.pc" ] &&
+		[ ! -e /boot/data/packages/llvm-project/build-libclc.x86_64/install/share/pkgconfig/libclc.pc ]; then
+	echo "libclc not found: run tools/build-clc-deps.sh first (NVK needs it to build)." >&2
+	exit 1
+fi
 buildProject mesa-nvk \
-	-Dpkg_config_path="/boot/data/packages/llvm-project/build-libclc.x86_64/install/share/pkgconfig:/boot/data/packages/SPIRV-LLVM-Translator/build.x86_64/install/lib/pkgconfig:/boot/data/packages/Vulkan/SPIRV-Tools/build.x86_64/install/lib/pkgconfig" \
+	-Dpkg_config_path="$clcDeps/share/pkgconfig:$clcDeps/lib/pkgconfig:/boot/data/packages/llvm-project/build-libclc.x86_64/install/share/pkgconfig:/boot/data/packages/SPIRV-LLVM-Translator/build.x86_64/install/lib/pkgconfig:/boot/data/packages/Vulkan/SPIRV-Tools/build.x86_64/install/lib/pkgconfig" \
 	-Dgallium-drivers= \
 	-Dvulkan-drivers=nouveau \
 	-Dplatforms=wayland \
