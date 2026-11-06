@@ -95,19 +95,71 @@ if [ ! -d "$llvmSrc/.git" ]; then
 fi
 git -C "$llvmSrc" sparse-checkout set libclc cmake
 
-libclcArgs=()
-if [ "$toolDir" != "$llvmBinDir" ]; then
-	libclcArgs+=(-DLIBCLC_CUSTOM_LLVM_TOOLS_BINARY_DIR="$toolDir")
+clcTargets=(spirv-mesa3d- spirv64-mesa3d-)
+
+if grep -q LIBCLC_TARGETS_TO_BUILD "$llvmSrc/libclc/CMakeLists.txt"; then
+	# libclc up to LLVM 22: one build for a list of targets; installs
+	# share/clc/<target>.spv and libclc.pc itself.
+	libclcArgs=()
+	if [ "$toolDir" != "$llvmBinDir" ]; then
+		libclcArgs+=(-DLIBCLC_CUSTOM_LLVM_TOOLS_BINARY_DIR="$toolDir")
+	fi
+	cmake -S "$llvmSrc/libclc" -B "$work/build-libclc" -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX="$prefix" \
+		-DLLVM_DIR="$llvmCmakeDir" \
+		-DLLVM_SPIRV="$prefix/bin/llvm-spirv" \
+		-DLIBCLC_TARGETS_TO_BUILD="$(IFS=';'; echo "${clcTargets[*]}")" \
+		"${libclcArgs[@]}"
+	ninja -C "$work/build-libclc" -j"$jobs"
+	ninja -C "$work/build-libclc" install
+else
+	# Newer libclc (LLVM 23): one target per build, taken from
+	# LLVM_DEFAULT_TARGET_TRIPLE; compiled through a CMake "CLC" language
+	# that falls back to the C compiler unless told to use clang; installs
+	# share/clc/<target>/libclc.spv and no libclc.pc. Build each target,
+	# then lay the results out the way Mesa looks for them.
+	llvmTool() { [ -x "$toolDir/$1" ] && echo "$toolDir/$1" || command -v "$1" || die "'$1' not found"; }
+	for name in "${clcTargets[@]}"; do
+		# The triple doubles as clang's --target, so it must be a real one:
+		# clang rejects the "mesa3d" OS for SPIR-V, and plain "spirv" means
+		# Vulkan-only logical SPIR-V. OpenCL's physical SPIR-V is spirv32 /
+		# spirv64. ("mesa3d" was only ever a libclc target name; older libclc
+		# compiled these with spir--/spir64--.) Mesa loads the results under
+		# the old names.
+		case "$name" in
+			spirv-*)   t=spirv32-unknown-unknown ;;
+			spirv64-*) t=spirv64-unknown-unknown ;;
+		esac
+		cmake -S "$llvmSrc/libclc" -B "$work/build-libclc-$t" -G Ninja \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_INSTALL_PREFIX="$prefix" \
+			-DLLVM_DIR="$llvmCmakeDir" \
+			-DLLVM_SPIRV="$prefix/bin/llvm-spirv" \
+			-DLLVM_DEFAULT_TARGET_TRIPLE="$t" \
+			-DCMAKE_CLC_COMPILER="$toolDir/clang" \
+			-DLLVM_TOOL_opt="$toolDir/opt" \
+			-DLLVM_TOOL_llvm-link="$toolDir/llvm-link" \
+			-DCMAKE_AR="$(llvmTool llvm-ar)" \
+			-DCMAKE_RANLIB="$(llvmTool llvm-ranlib)"
+		ninja -C "$work/build-libclc-$t" -j"$jobs"
+		ninja -C "$work/build-libclc-$t" install
+		[ -s "$prefix/share/clc/$t/libclc.spv" ] || die "libclc did not install share/clc/$t/libclc.spv"
+		cp "$prefix/share/clc/$t/libclc.spv" "$prefix/share/clc/$name.spv"
+	done
+	# Same contents as the libclc.pc that older libclc installs.
+	mkdir -p "$prefix/share/pkgconfig"
+	cat > "$prefix/share/pkgconfig/libclc.pc" <<-EOF
+		includedir=$prefix/include
+		libexecdir=$prefix/share/clc
+
+		Name: libclc
+		Description: Library requirements of the OpenCL C programming language
+		Version: 0.2.0
+		Cflags: -I\${includedir}
+		Libs: -L\${libexecdir}
+	EOF
 fi
-cmake -S "$llvmSrc/libclc" -B "$work/build-libclc" -G Ninja \
-	-DCMAKE_BUILD_TYPE=Release \
-	-DCMAKE_INSTALL_PREFIX="$prefix" \
-	-DLLVM_DIR="$llvmCmakeDir" \
-	-DLLVM_SPIRV="$prefix/bin/llvm-spirv" \
-	-DLIBCLC_TARGETS_TO_BUILD="spirv-mesa3d-;spirv64-mesa3d-" \
-	"${libclcArgs[@]}"
-ninja -C "$work/build-libclc" -j"$jobs"
-ninja -C "$work/build-libclc" install
 
 # 3. Check what Mesa will look for.
 export PKG_CONFIG_PATH="$prefix/lib/pkgconfig:$prefix/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
