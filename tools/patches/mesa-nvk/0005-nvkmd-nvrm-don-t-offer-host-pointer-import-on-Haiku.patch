@@ -1,0 +1,36 @@
+From cfef9620407a3357fce7de50b0cbe1c199d60e5d Mon Sep 17 00:00:00 2001
+From: Techniix <Techniix@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 22:43:49 -0500
+Subject: [PATCH] nvkmd/nvrm: don't offer host-pointer import on Haiku
+
+VK_EXT_external_memory_host imports go through ALLOC_OS_DESCRIPTOR, and
+RM pins the pages with os_lock_user_pages(), which the Haiku kernel
+driver still stubs with a panic. Report has_userptr = false on Haiku
+until that is implemented, so no app (Zink included) can reach it.
+---
+ src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c
+index 4a51079..2193871 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_pdev.c
+@@ -437,7 +437,15 @@ nvkmd_nvrm_create_pdev(struct vk_object_base *log_obj,
+    	.has_dma_buf = true,
+    	.has_get_vram_used = true,
+    	.has_alloc_tiled = true,
++#ifdef __HAIKU__
++   	/* Host-pointer import (VK_EXT_external_memory_host) goes through
++   	 * ALLOC_OS_DESCRIPTOR, which needs os_lock_user_pages(). The Haiku
++   	 * kernel driver doesn't implement it yet (it panics), so don't offer
++   	 * the extension there. */
++   	.has_userptr = false,
++#else
+    	.has_userptr = true,
++#endif
+    };
+ 
+    pdev->channelClass = nvkmd_nvrm_pdev_find_supported_class(pdev, ARRAY_SIZE(sChannelClasses), sChannelClasses);
+-- 
+2.43.0
+
