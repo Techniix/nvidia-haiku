@@ -120,6 +120,43 @@ if ! pkgman install -H -y "$hpkg"; then
 	exit 1
 fi
 
+# 4. Check that the Vulkan loader will see exactly one NVK: this package's.
+# Anything else (a non-packaged copy, a system-wide one, or VK_DRIVER_FILES /
+# VK_ICD_FILENAMES pointing somewhere) would let apps load two drivers for
+# the same GPU, or the wrong one.
+echo
+echo "Checking for other copies of NVK..."
+configDir="$(finddir B_USER_CONFIG_DIRECTORY)"
+ours="$configDir/add-ons/vulkan/icd.d"
+strays=()
+for base in "$(finddir B_SYSTEM_DIRECTORY)" "$(finddir B_SYSTEM_NONPACKAGED_DIRECTORY)" \
+		"$configDir" "$(finddir B_USER_NONPACKAGED_DIRECTORY)"; do
+	for f in "$base"/add-ons/vulkan/icd.d/nouveau_icd*.json "$base"/data/vulkan/icd.d/nouveau_icd*.json \
+			"$base"/add-ons/vulkan/icd.d/libvulkan_nouveau.so* "$base"/lib/libvulkan_nouveau.so*; do
+		[ -e "$f" ] || continue
+		case "$f" in "$ours"/*) continue ;; esac
+		strays+=("$f")
+	done
+done
+envFile="$(finddir B_USER_SETTINGS_DIRECTORY)/boot/UserSetupEnvironment"
+envHits="$(grep -nE 'VK_(DRIVER_FILES|ICD_FILENAMES|ADD_DRIVER_FILES)' "$envFile" 2>/dev/null || true)"
+if [ ${#strays[@]} -eq 0 ] && [ -z "$envHits" ]; then
+	echo "  only quasar's NVK is installed."
+else
+	for f in "${strays[@]}"; do echo "  WARNING: another NVK file: $f"; done
+	if [ -n "$envHits" ]; then
+		echo "  WARNING: $envFile selects Vulkan drivers:"
+		echo "$envHits" | sed 's/^/    /'
+	fi
+	echo "  Apps may load two NVKs, or the wrong one. Move these aside (or run"
+	echo "  tools/install.sh --clean-only), then reboot."
+fi
+for v in VK_DRIVER_FILES VK_ICD_FILENAMES VK_ADD_DRIVER_FILES; do
+	if [ -n "${!v:-}" ]; then
+		echo "  Note: $v is set in this shell (${!v}); unset it before testing."
+	fi
+done
+
 echo
 echo "quasar $version is installed in your home packages."
 echo "Reboot to load the driver."
