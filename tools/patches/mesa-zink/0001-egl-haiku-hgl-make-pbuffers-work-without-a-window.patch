@@ -1,0 +1,122 @@
+From c2d8766a4ed64c821859443162a32d49cd23825d Mon Sep 17 00:00:00 2001
+From: Techniix <Techniix@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 13:14:18 -0500
+Subject: [PATCH] egl/haiku, hgl: make pbuffers work without a window
+
+A pbuffer's hgl_buffer has no BitmapHook (winsysContext is NULL), but:
+
+- haiku_make_current() calls update_size(), which called
+  BitmapHook::GetSize() through that NULL pointer;
+- haiku_swap_buffers() went on to flush_frontbuffer() and update_size();
+- hgl_st_framebuffer_validate_textures() created the color buffers as
+  Zink drawables (kopper) and every attachment with
+  PIPE_BIND_DISPLAY_TARGET, which need a window behind them;
+- hgl_st_framebuffer_flush_front() passed the NULL hook to
+  flush_frontbuffer().
+
+Skip the size query for windowless buffers (a pbuffer's size is fixed at
+creation), make eglSwapBuffers() on a pbuffer a no-op as EGL 1.5 3.10.3
+requires, create plain render-target and depth textures when there is no
+window, and don't try to show a windowless front buffer. A pbuffer created
+without EGL_WIDTH/EGL_HEIGHT (0x0, which is valid) gets 1x1 textures, since
+the backing resources can't be empty.
+---
+ src/egl/drivers/haiku/egl_haiku.cpp | 16 ++++++++++++++--
+ src/gallium/frontends/hgl/hgl.c     | 15 ++++++++++++++-
+ 2 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/src/egl/drivers/haiku/egl_haiku.cpp b/src/egl/drivers/haiku/egl_haiku.cpp
+index 24d5dd3..06af9da 100644
+--- a/src/egl/drivers/haiku/egl_haiku.cpp
++++ b/src/egl/drivers/haiku/egl_haiku.cpp
+@@ -159,8 +159,10 @@ haiku_create_pbuffer_surface(_EGLDisplay *disp, _EGLConfig *conf,
+       return NULL;
+    }
+ 
+-   wgl_surf->fb->newWidth = wgl_surf->base.Width;
+-   wgl_surf->fb->newHeight = wgl_surf->base.Height;
++   // EGL_WIDTH/EGL_HEIGHT default to 0, which is a valid pbuffer, but the
++   // backing textures can't be empty: give them at least one pixel.
++   wgl_surf->fb->newWidth = std::max<EGLint>(wgl_surf->base.Width, 1);
++   wgl_surf->fb->newHeight = std::max<EGLint>(wgl_surf->base.Height, 1);
+    p_atomic_inc(&wgl_surf->fb->base.stamp);
+ 
+    return &wgl_surf->base;
+@@ -190,6 +192,11 @@ haiku_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
+ static void
+ update_size(struct hgl_buffer *buffer)
+ {
++   // A pbuffer has no window (winsysContext is NULL); its size was fixed when
++   // it was created.
++   if (buffer->winsysContext == NULL)
++      return;
++
+    uint32_t newWidth, newHeight;
+    ((BitmapHook *)buffer->winsysContext)->GetSize(newWidth, newHeight);
+    if (buffer->newWidth != newWidth || buffer->newHeight != newHeight) {
+@@ -208,6 +215,11 @@ haiku_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
+    if (hgl_ctx == NULL)
+       return EGL_FALSE;
+ 
++   // EGL 1.5, 3.10.3: "If surface is a pixel buffer or a pixmap,
++   // eglSwapBuffers has no effect, and no error is generated."
++   if (hgl_surf->fb->winsysContext == NULL)
++      return EGL_TRUE;
++
+    struct st_context *st = hgl_ctx->ctx->st;
+    struct pipe_screen *screen = hgl_dpy->disp->fscreen->screen;
+ 
+diff --git a/src/gallium/frontends/hgl/hgl.c b/src/gallium/frontends/hgl/hgl.c
+index 5fc09cb..17f4ac3 100644
+--- a/src/gallium/frontends/hgl/hgl.c
++++ b/src/gallium/frontends/hgl/hgl.c
+@@ -73,6 +73,10 @@ hgl_st_framebuffer_flush_front(struct st_context *st,
+ 	if (!ptex)
+ 		return true;
+ 
++	// A pbuffer has no window to show the front buffer in.
++	if (buffer->winsysContext == NULL)
++		return true;
++
+ 	// TODO: pipe_context here??? Might be needed for hw renderers
+ 	buffer->screen->flush_frontbuffer(buffer->screen, NULL, ptex, 0, 0,
+ 		buffer->winsysContext, 0, NULL);
+@@ -108,6 +112,11 @@ hgl_st_framebuffer_validate_textures(struct pipe_frontend_drawable *drawable,
+ 
+ 	buffer = hgl_st_framebuffer(drawable);
+ 
++	/* A pbuffer (no BitmapHook) gets plain textures: nothing is ever
++	 * displayed, and a display-target or Zink drawable resource needs a
++	 * window to back it. */
++	const bool has_window = buffer->winsysContext != NULL;
++
+ 	if (buffer->width != width || buffer->height != height) {
+ 		TRACE("validate_textures: size changed: %d, %d -> %d, %d\n",
+ 			buffer->width, buffer->height, width, height);
+@@ -143,10 +152,14 @@ hgl_st_framebuffer_validate_textures(struct pipe_frontend_drawable *drawable,
+ 					if (i == ST_ATTACHMENT_BACK_LEFT && buffer->textures[ST_ATTACHMENT_FRONT_LEFT])
+ 						bind &= ~PIPE_BIND_DISPLAY_TARGET;
+ #endif
++					if (!has_window)
++						bind &= ~PIPE_BIND_DISPLAY_TARGET;
+ 					break;
+ 				case ST_ATTACHMENT_DEPTH_STENCIL:
+ 					format = buffer->visual.depth_stencil_format;
+ 					bind = PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_DEPTH_STENCIL;
++					if (!has_window)
++						bind &= ~PIPE_BIND_DISPLAY_TARGET;
+ 					break;
+ 				default:
+ 					format = PIPE_FORMAT_NONE;
+@@ -159,7 +172,7 @@ hgl_st_framebuffer_validate_textures(struct pipe_frontend_drawable *drawable,
+ 				templat.bind = bind;
+ 				TRACE("resource_create(%d, %d, %d)\n", i, format, bind);
+ #ifdef GALLIUM_ZINK
+-				if (i < ST_ATTACHMENT_DEPTH_STENCIL && buffer->screen->resource_create_drawable) {
++				if (has_window && i < ST_ATTACHMENT_DEPTH_STENCIL && buffer->screen->resource_create_drawable) {
+ 					struct kopper_loader_info loader_info;
+ 					void *data;
+ 
+-- 
+2.43.0
+

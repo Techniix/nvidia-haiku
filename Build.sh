@@ -175,6 +175,7 @@ if [ -n "$(projectDir mesa-zink)" ] &&
 	echo "Run tools/build-glvnd-deps.sh, then Build.sh again, to build Zink too."
 	exit 0
 fi
+applyPatches mesa-zink
 buildProject mesa-zink \
 	-Dpkg_config_path="$glvndPcPath:/boot/data/packages/Vulkan/SPIRV-Tools/build.x86_64/install/lib/pkgconfig" \
 	-Dplatforms=haiku \

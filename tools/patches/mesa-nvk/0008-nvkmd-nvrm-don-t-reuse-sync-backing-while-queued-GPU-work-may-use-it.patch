@@ -1,0 +1,555 @@
+From 0e9289ea8596d642b0534af80ef8e4075e1bfb6a Mon Sep 17 00:00:00 2001
+From: Techniix <Techniix@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 13:13:25 -0500
+Subject: [PATCH] nvkmd/nvrm: don't reuse sync backing while queued GPU work
+ may use it
+
+The sync type has no WAIT_BEFORE_SIGNAL, so the runtime runs the queue in
+THREADED_ON_DEMAND mode, and the first submit that waits on a timeline
+point not yet submitted switches the queue to a submit thread for good.
+From then on vk_queue_submit_move_binary_waits_to_temps() moves every
+binary-semaphore wait into a temporary vk_sync, and
+vk_queue_submit_cleanup() destroys that temporary as soon as the driver
+has accepted the submission, not when the GPU has run it.
+
+Two bugs made that hang the channel with no RC error, so everything behind
+it (e.g. a timeline release the CPU waits for) never ran. OBS (one GL
+context used from several threads, through Zink) hit it within its first
+frames as a timeline wait stuck at value N-1 with submit_seq N.
+
+1. Slot reuse. The pooled move swaps slots, so the temporary owns the slot
+   the queued host SEM acquire reads. Destroying it returned the slot to
+   the pool, and the next allocation took the lowest free slot, that one,
+   and zeroed it. If the release had already landed, the acquire then
+   waited for a value that never came.
+
+   A freed slot now records, for every channel, the fence by which that
+   channel will have executed everything already emitted (its last
+   submission, or the next one if its push holds unsubmitted methods), and
+   goes back to the pool only once each channel has completed it. A
+   dedicated sync's memory reference is dropped the same way, which covers
+   temporarily imported payloads the runtime destroys right after submit.
+   Channels register when they finish init (failing init if that can't be
+   recorded) and unregister once their RM channel is freed. wSeq is now
+   published before the push is reset, so a concurrent reader errs late,
+   never early. The logic is in nvkmd_nvrm_retire.h, free of driver types
+   so it can be tested on its own. The first deferral per device is
+   reported on stderr.
+
+2. Stale reset. sync_reset_data() set reset_mark to the completed value.
+   The runtime resets a binary semaphore right after submitting its wait,
+   usually before the GPU has run the signal it consumes (value k-1,
+   submit_seq k), so the semaphore read as signaled, and pending, again
+   once that release landed. A later move then passed its WAIT_PENDING on
+   that stale state and swapped backings before the real next signal was
+   emitted: the release went to the new slot while the moved acquire waited
+   on the old one. reset_mark now covers submitted signals as well.
+---
+ src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h    |  19 ++
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c        |  37 +++-
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c        |   2 +
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_retire.h     | 113 ++++++++++
+ .../vulkan/nvkmd/nvrm/nvkmd_nvrm_sync.c       | 196 ++++++++++++++++--
+ 5 files changed, 350 insertions(+), 17 deletions(-)
+ create mode 100644 src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_retire.h
+
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
+index 0a96e13..c556220 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm.h
+@@ -70,6 +70,12 @@ struct nvkmd_nvrm_dev {
+     * wait need not open/alloc/free an OS event every time. Guarded by
+     * sync_mutex. */
+    struct util_dynarray sync_events;  /* struct nvkmd_nvrm_sync_event */
++   /* Channels that can access pool slots (every exec and bind channel), and
++    * freed slots waiting for those channels to retire the work that may still
++    * use them (see nvkmd_nvrm_retire.h). Both guarded by sync_mutex. */
++   struct util_dynarray sync_channels;  /* struct nvkmd_nvrm_channel * */
++   struct util_dynarray sync_retiring;  /* struct nvrm_retire_entry * */
++   bool sync_retire_reported;
+ };
+ 
+ NVKMD_DECL_SUBCLASS(dev, nvrm);
+@@ -276,6 +282,19 @@ nvkmd_nvrm_sync_cpu_signal(struct vk_sync *sync, uint64_t value);
+  * nvkmd_nvrm_sync.c) so the payload is monotonic and a post-submit reset can
+  * never lower it beneath an in-flight acquire. */
+ uint64_t nvkmd_nvrm_sync_gpu_addr(struct vk_sync *sync);
++
++struct nvkmd_nvrm_channel;
++/* Register/unregister a channel whose host SEM methods may name sync-pool
++ * slots, so freed slots are not reused while it may still access them.
++ * Registration fails only when out of memory. */
++bool nvkmd_nvrm_sync_register_channel(struct nvkmd_nvrm_dev *dev,
++                                      struct nvkmd_nvrm_channel *chan);
++void nvkmd_nvrm_sync_unregister_channel(struct nvkmd_nvrm_dev *dev,
++                                        struct nvkmd_nvrm_channel *chan);
++/* The channel fence it has completed, and the fence by which it will have
++ * executed everything emitted so far (submitted or still in its push). */
++uint64_t nvkmd_nvrm_channel_completed(const struct nvkmd_nvrm_channel *chan);
++uint64_t nvkmd_nvrm_channel_retire_point(const struct nvkmd_nvrm_channel *chan);
+ uint64_t nvkmd_nvrm_sync_gpu_signal_value(struct vk_sync *sync, uint64_t value);
+ uint64_t nvkmd_nvrm_sync_gpu_wait_value(struct vk_sync *sync, uint64_t value);
+ 
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
+index 321be1b..8ad5e5a 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_ctx.c
+@@ -232,6 +232,25 @@ write_semaphore_acquire(struct nv_push *push, uint64_t adrGpu, uint64_t value)
+    });
+ }
+ 
++uint64_t
++nvkmd_nvrm_channel_completed(const struct nvkmd_nvrm_channel *chan)
++{
++	return *(volatile uint64_t *)chan->sem->map;
++}
++
++uint64_t
++nvkmd_nvrm_channel_retire_point(const struct nvkmd_nvrm_channel *chan)
++{
++	/* Methods already in the push but not yet submitted will be retired by
++	 * the next fence. Read the push before wSeq: nvrm_channel_submit()
++	 * publishes the new wSeq before resetting the push, so a concurrent
++	 * submit can make this one fence too high, never too low. */
++	bool unsubmitted = nv_push_dw_count(&chan->push) > 0;
++	__atomic_thread_fence(__ATOMIC_SEQ_CST);
++	uint64_t submitted = __atomic_load_n(&chan->wSeq, __ATOMIC_ACQUIRE);
++	return unsubmitted ? submitted + 1 : submitted;
++}
++
+ static void
+ nvrm_channel_finish(struct nvkmd_nvrm_dev *dev, struct nvkmd_nvrm_channel *chan)
+ {
+@@ -245,6 +264,13 @@ nvrm_channel_finish(struct nvkmd_nvrm_dev *dev, struct nvkmd_nvrm_channel *chan)
+       close(chan->osEvent);
+    if (chan->hChannel != 0)
+       nvRmApiFree(&rm, chan->hChannel);
++
++   /* The channel is gone, so none of its work can touch a sync slot any more:
++    * stop deferring slot reuse on it. Must come before chan->sem is released,
++    * which the slot pool reads while the channel is registered. No-op for a
++    * channel that never finished init (never registered). */
++   nvkmd_nvrm_sync_unregister_channel(dev, chan);
++
+    if (chan->hCtxDma != 0)
+       nvRmApiFree(&rm, chan->hCtxDma);
+    if (chan->sem != NULL)
+@@ -362,6 +388,13 @@ nvrm_channel_init(struct nvkmd_nvrm_dev *dev,
+ 
+    chan_begin_slot(chan);
+ 
++   /* From here on its SEM methods may name sync-pool slots. An untracked
++    * channel would let slots be reused under it, so fail instead. */
++   if (!nvkmd_nvrm_sync_register_channel(dev, chan)) {
++      vkRes = vk_error(log_obj, VK_ERROR_OUT_OF_HOST_MEMORY);
++      goto error;
++   }
++
+    return VK_SUCCESS;
+ 
+ error:
+@@ -386,7 +419,9 @@ nvrm_channel_submit(struct nvkmd_nvrm_dev *dev,
+    KeplerBControlGPFifo *userD = chan->userD->map;
+    uint64_t semAdrGpu = chan->sem->va->addr;
+ 
+-   chan->wSeq++;
++   /* Published before the push is reset (chan_begin_slot below); see
++    * nvkmd_nvrm_channel_retire_point(). */
++   __atomic_store_n(&chan->wSeq, chan->wSeq + 1, __ATOMIC_RELEASE);
+ 
+    /* Channel fence: the drained-state marker the slot-recycle wait polls on. */
+    write_semaphore_release(&chan->push, semAdrGpu, chan->wSeq, true);
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
+index 43f501e..3fc5ac5 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_dev.c
+@@ -33,6 +33,8 @@ nvkmd_nvrm_create_dev(struct nvkmd_pdev *_pdev,
+    simple_mtx_init(&dev->sync_mutex, mtx_plain);
+    util_dynarray_init(&dev->sync_pages, NULL);
+    util_dynarray_init(&dev->sync_events, NULL);
++   util_dynarray_init(&dev->sync_channels, NULL);
++   util_dynarray_init(&dev->sync_retiring, NULL);
+ 
+    dev->mappings = _mesa_hash_table_create(NULL, _mesa_hash_pointer, _mesa_key_pointer_equal);
+    if (dev->mappings == NULL) {
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_retire.h b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_retire.h
+new file mode 100644
+index 0000000..b838cdb
+--- /dev/null
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_retire.h
+@@ -0,0 +1,113 @@
++/*
++ * Copyright © 2026 Techniix
++ * SPDX-License-Identifier: MIT
++ */
++
++/* Deferred reuse of sync-pool slots.
++ *
++ * A vk_sync's pool slot is a GPU semaphore word. Host SEM acquires and
++ * releases emitted into a channel name the slot by address and run when the
++ * channel reaches them, which can be well after the vk_sync that owned the
++ * slot has been destroyed: the Vulkan runtime destroys the temporary syncs it
++ * moves binary waits into as soon as the submission has been handed to the
++ * driver (vk_queue_submit_cleanup), not when the GPU has run it. If the slot
++ * went straight back to the pool, the next allocation would zero it and the
++ * queued acquire would wait for a value that never comes, stalling the
++ * channel.
++ *
++ * So a freed slot records, for every channel, the fence by which that
++ * channel will have executed everything already emitted (its "retire
++ * point"), and is reused only once each of those channels has completed it.
++ *
++ * Kept free of driver types so tests can exercise it directly. */
++
++#ifndef NVKMD_NVRM_RETIRE_H
++#define NVKMD_NVRM_RETIRE_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdlib.h>
++
++struct nvrm_retire_point {
++   const void *chan;   /* NULL once the channel has been destroyed */
++   uint64_t point;     /* fence value the channel must complete */
++};
++
++struct nvrm_retire_entry {
++   void *mem;          /* opaque: the pool page's (or dedicated) memory */
++   uint64_t offset;    /* slot offset within mem */
++   uint32_t kind;      /* opaque to this header: what to do once ready */
++   uint32_t num_points;
++   struct nvrm_retire_point points[];
++};
++
++typedef uint64_t (*nvrm_retire_completed_fn)(const void *chan);
++typedef uint64_t (*nvrm_retire_point_fn)(const void *chan);
++
++/* Build the retire entry for a slot (or memory) being freed, or return NULL
++ * with *ready_now = true when no channel has outstanding work, so it can be
++ * reused at once. Channels whose completed fence already covers their retire
++ * point are left out. Each channel is read exactly once, so a channel that
++ * advances concurrently can't push another one out of the entry. On
++ * allocation failure, returns NULL with *ready_now = false: the caller must
++ * then never reuse the slot (leak it) rather than risk it. */
++static inline struct nvrm_retire_entry *
++nvrm_retire_entry_create(void *mem, uint64_t offset, uint32_t kind,
++                         const void *const *chans, uint32_t num_chans,
++                         nvrm_retire_completed_fn completed,
++                         nvrm_retire_point_fn retire_point,
++                         bool *ready_now)
++{
++   *ready_now = false;
++   struct nvrm_retire_entry *e =
++      malloc(sizeof(*e) + (size_t)num_chans * sizeof(e->points[0]));
++   if (e == NULL)
++      return NULL;
++
++   e->mem = mem;
++   e->offset = offset;
++   e->kind = kind;
++   e->num_points = 0;
++   for (uint32_t i = 0; i < num_chans; i++) {
++      uint64_t point = retire_point(chans[i]);
++      if (completed(chans[i]) < point) {
++         e->points[e->num_points].chan = chans[i];
++         e->points[e->num_points].point = point;
++         e->num_points++;
++      }
++   }
++
++   if (e->num_points == 0) {
++      free(e);
++      *ready_now = true;
++      return NULL;
++   }
++   return e;
++}
++
++/* True once every still-existing channel recorded in the entry has completed
++ * its retire point. */
++static inline bool
++nvrm_retire_entry_ready(const struct nvrm_retire_entry *e,
++                        nvrm_retire_completed_fn completed)
++{
++   for (uint32_t i = 0; i < e->num_points; i++) {
++      const struct nvrm_retire_point *p = &e->points[i];
++      if (p->chan != NULL && completed(p->chan) < p->point)
++         return false;
++   }
++   return true;
++}
++
++/* A channel is going away: its work can no longer touch any slot, so drop it
++ * from the entry. */
++static inline void
++nvrm_retire_entry_forget_chan(struct nvrm_retire_entry *e, const void *chan)
++{
++   for (uint32_t i = 0; i < e->num_points; i++) {
++      if (e->points[i].chan == chan)
++         e->points[i].chan = NULL;
++   }
++}
++
++#endif /* NVKMD_NVRM_RETIRE_H */
+diff --git a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_sync.c b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_sync.c
+index 6d47501..55711a6 100644
+--- a/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_sync.c
++++ b/src/nouveau/vulkan/nvkmd/nvrm/nvkmd_nvrm_sync.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "nvkmd_nvrm.h"
++#include "nvkmd_nvrm_retire.h"
+ 
+ #include <fcntl.h>
+ #include <unistd.h>
+@@ -130,6 +131,108 @@ sync_pool_slots_per_page(void)
+    return 0x1000 / NVRM_SYNC_SLOT_SIZE;
+ }
+ 
++/* What a retire entry frees once its channels have retired (entry->kind). */
++enum {
++   SYNC_RETIRE_POOL_SLOT,  /* a pool slot: back to its page's free bitmap */
++   SYNC_RETIRE_MEM_UNREF,  /* a dedicated sync's memory: drop our reference */
++};
++
++/* Return a slot to its page's free bitmap. Caller holds sync_mutex. */
++static void
++sync_pool_release_slot_locked(struct nvkmd_nvrm_dev *dev,
++                              struct nvkmd_mem *mem, uint64_t offset)
++{
++   uint32_t slot = (uint32_t)(offset / NVRM_SYNC_SLOT_SIZE);
++
++   util_dynarray_foreach(&dev->sync_pages, struct nvkmd_nvrm_sync_page *, it) {
++      struct nvkmd_nvrm_sync_page *page = *it;
++      if (page->mem == mem) {
++         assert(page->bitmap[slot / 64] & (1ull << (slot % 64)));
++         page->bitmap[slot / 64] &= ~(1ull << (slot % 64));
++         page->free_count++;
++         return;
++      }
++   }
++   assert(!"sync slot freed into an unknown page");
++}
++
++static uint64_t
++sync_chan_completed(const void *chan)
++{
++   return nvkmd_nvrm_channel_completed(chan);
++}
++
++static uint64_t
++sync_chan_retire_point(const void *chan)
++{
++   return nvkmd_nvrm_channel_retire_point(chan);
++}
++
++/* Put freed slots whose channels have all retired the relevant work back into
++ * the pool. Caller holds sync_mutex. */
++static void
++sync_pool_reclaim_locked(struct nvkmd_nvrm_dev *dev)
++{
++   struct nvrm_retire_entry **entries =
++      util_dynarray_begin(&dev->sync_retiring);
++   unsigned count = util_dynarray_num_elements(&dev->sync_retiring,
++                                               struct nvrm_retire_entry *);
++   unsigned kept = 0;
++   for (unsigned i = 0; i < count; i++) {
++      struct nvrm_retire_entry *e = entries[i];
++      if (nvrm_retire_entry_ready(e, sync_chan_completed)) {
++         if (e->kind == SYNC_RETIRE_MEM_UNREF)
++            nvkmd_mem_unref(e->mem);
++         else
++            sync_pool_release_slot_locked(dev, e->mem, e->offset);
++         free(e);
++      } else {
++         entries[kept++] = e;
++      }
++   }
++   dev->sync_retiring.size = kept * sizeof(struct nvrm_retire_entry *);
++}
++
++bool
++nvkmd_nvrm_sync_register_channel(struct nvkmd_nvrm_dev *dev,
++                                 struct nvkmd_nvrm_channel *chan)
++{
++   simple_mtx_lock(&dev->sync_mutex);
++   struct nvkmd_nvrm_channel **slot =
++      util_dynarray_grow(&dev->sync_channels, struct nvkmd_nvrm_channel *, 1);
++   if (slot != NULL)
++      *slot = chan;
++   simple_mtx_unlock(&dev->sync_mutex);
++   return slot != NULL;
++}
++
++void
++nvkmd_nvrm_sync_unregister_channel(struct nvkmd_nvrm_dev *dev,
++                                   struct nvkmd_nvrm_channel *chan)
++{
++   simple_mtx_lock(&dev->sync_mutex);
++
++   bool found = false;
++   util_dynarray_foreach(&dev->sync_channels, struct nvkmd_nvrm_channel *, it) {
++      if (*it == chan) {
++         util_dynarray_delete_unordered(&dev->sync_channels,
++                                        struct nvkmd_nvrm_channel *, chan);
++         found = true;
++         break;
++      }
++   }
++
++   /* The channel is being destroyed, so its work can no longer touch any
++    * slot: stop waiting on it. */
++   if (found) {
++      util_dynarray_foreach(&dev->sync_retiring, struct nvrm_retire_entry *, it)
++         nvrm_retire_entry_forget_chan(*it, chan);
++      sync_pool_reclaim_locked(dev);
++   }
++
++   simple_mtx_unlock(&dev->sync_mutex);
++}
++
+ static VkResult
+ sync_pool_alloc_slot(struct nvkmd_nvrm_dev *dev,
+                      struct nvkmd_mem **mem_out, uint64_t *offset_out)
+@@ -137,6 +240,10 @@ sync_pool_alloc_slot(struct nvkmd_nvrm_dev *dev,
+    VkResult result = VK_SUCCESS;
+    simple_mtx_lock(&dev->sync_mutex);
+ 
++   if (util_dynarray_num_elements(&dev->sync_retiring,
++                                  struct nvrm_retire_entry *) > 0)
++      sync_pool_reclaim_locked(dev);
++
+    uint32_t per_page = sync_pool_slots_per_page();
+ 
+    struct nvkmd_nvrm_sync_page *page = NULL;
+@@ -189,28 +296,72 @@ out:
+    return result;
+ }
+ 
++/* Release a pool slot or a dedicated sync's memory. If any channel may still
++ * execute a SEM method naming it, it is parked until that work has retired
++ * (see nvkmd_nvrm_retire.h): reusing a slot now would zero a word a queued
++ * GPU acquire or release still targets, and dropping the last reference to
++ * dedicated memory would unmap it from under one. */
+ static void
+-sync_pool_free_slot(struct nvkmd_nvrm_dev *dev,
+-                    struct nvkmd_mem *mem, uint64_t offset)
++sync_retire(struct nvkmd_nvrm_dev *dev, struct nvkmd_mem *mem,
++            uint64_t offset, uint32_t kind)
+ {
+-   uint32_t slot = (uint32_t)(offset / NVRM_SYNC_SLOT_SIZE);
+-
+    simple_mtx_lock(&dev->sync_mutex);
+-   util_dynarray_foreach(&dev->sync_pages, struct nvkmd_nvrm_sync_page *, it) {
+-      struct nvkmd_nvrm_sync_page *page = *it;
+-      if (page->mem == mem) {
+-         assert(page->bitmap[slot / 64] & (1ull << (slot % 64)));
+-         page->bitmap[slot / 64] &= ~(1ull << (slot % 64));
+-         page->free_count++;
+-         break;
++
++   bool ready_now;
++   struct nvrm_retire_entry *e =
++      nvrm_retire_entry_create(mem, offset, kind,
++                               util_dynarray_begin(&dev->sync_channels),
++                               util_dynarray_num_elements(&dev->sync_channels,
++                                                          struct nvkmd_nvrm_channel *),
++                               sync_chan_completed, sync_chan_retire_point,
++                               &ready_now);
++   if (ready_now) {
++      if (kind == SYNC_RETIRE_MEM_UNREF)
++         nvkmd_mem_unref(mem);
++      else
++         sync_pool_release_slot_locked(dev, mem, offset);
++   } else if (e != NULL) {
++      struct nvrm_retire_entry **slot =
++         util_dynarray_grow(&dev->sync_retiring, struct nvrm_retire_entry *, 1);
++      if (slot != NULL) {
++         *slot = e;
++         if (!dev->sync_retire_reported) {
++            dev->sync_retire_reported = true;
++            fprintf(stderr, "nvk/nvrm: deferring reuse of a sync slot until "
++                    "queued GPU work retires (normal with a submit thread; "
++                    "reported once per device)\n");
++         }
++      } else {
++         free(e);  /* out of memory: never reuse it (leak) */
+       }
+    }
++   /* else: out of memory recording it: never reuse it (leak). */
++
+    simple_mtx_unlock(&dev->sync_mutex);
+ }
+ 
++static void
++sync_pool_free_slot(struct nvkmd_nvrm_dev *dev,
++                    struct nvkmd_mem *mem, uint64_t offset)
++{
++   sync_retire(dev, mem, offset, SYNC_RETIRE_POOL_SLOT);
++}
++
+ void
+ nvkmd_nvrm_sync_pool_finish(struct nvkmd_nvrm_dev *dev)
+ {
++   /* Every channel is gone by now, so nothing the entries wait for can still
++    * happen: release them. Pool pages are freed below. */
++   assert(util_dynarray_num_elements(&dev->sync_channels,
++                                     struct nvkmd_nvrm_channel *) == 0);
++   util_dynarray_foreach(&dev->sync_retiring, struct nvrm_retire_entry *, it) {
++      if ((*it)->kind == SYNC_RETIRE_MEM_UNREF)
++         nvkmd_mem_unref((*it)->mem);
++      free(*it);
++   }
++   util_dynarray_fini(&dev->sync_retiring);
++   util_dynarray_fini(&dev->sync_channels);
++
+    util_dynarray_foreach(&dev->sync_events, struct nvkmd_nvrm_sync_event, ev)
+       sync_event_destroy(dev, ev->fd, ev->hEvent);
+    util_dynarray_fini(&dev->sync_events);
+@@ -230,8 +381,11 @@ sync_release_backing(struct nvkmd_nvrm_sync *sync)
+ {
+    if (sync->mem == NULL)
+       return;
++   /* Both deferred until queued GPU work naming the word has retired. For
++    * dedicated memory that matters when ours is the last reference, e.g. a
++    * temporarily imported payload the runtime destroys right after submit. */
+    if (sync->dedicated)
+-      nvkmd_mem_unref(sync->mem);
++      sync_retire(sync->dev, sync->mem, 0, SYNC_RETIRE_MEM_UNREF);
+    else
+       sync_pool_free_slot(sync->dev, sync->mem, sync->offset);
+    sync->mem = NULL;
+@@ -339,15 +493,25 @@ sync_cpu_signal_data(struct nvkmd_nvrm_sync *sync, uint64_t value)
+  * `value` would race a GPU acquire emitted by an earlier submit that re-reads
+  * the slot at execution time (the runtime resets a binary wait-semaphore right
+  * after vkQueueSubmit in IMMEDIATE mode), stalling the host on that acquire
+- * forever. Instead raise the baseline to the current payload, so "signaled"
+- * (value > reset_mark) requires a fresh signal while the monotonic value stays
+- * put for any in-flight acquire. */
++ * forever. Instead raise the baseline, so "signaled" (value > reset_mark)
++ * requires a fresh signal while the monotonic value stays put for any
++ * in-flight acquire.
++ *
++ * The baseline must cover signals already *submitted*, not only completed
++ * ones. The runtime resets right after submitting the wait, typically before
++ * the GPU has run the signal it consumes (value = k-1, submit_seq = k). A
++ * baseline of k-1 would make the sync read signaled again once that release
++ * lands, and pending again at once; a later move of a binary wait then passes
++ * its WAIT_PENDING on that stale state, swaps backings before the real next
++ * signal has been emitted, and the moved acquire waits on the old slot for a
++ * value that now goes to the new one. */
+ static void
+ sync_reset_data(struct nvkmd_nvrm_sync *sync)
+ {
+    struct nvrm_sync_data *d = sync_data(sync);
+    uint64_t v = __atomic_load_n(&d->value, __ATOMIC_ACQUIRE);
+-   __atomic_store_n(&d->reset_mark, v, __ATOMIC_SEQ_CST);
++   uint64_t submitted = __atomic_load_n(&d->submit_seq, __ATOMIC_ACQUIRE);
++   __atomic_store_n(&d->reset_mark, MAX2(v, submitted), __ATOMIC_SEQ_CST);
+ }
+ 
+ static VkResult
+-- 
+2.43.0
+
