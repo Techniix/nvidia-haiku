@@ -17,13 +17,15 @@
 | Base revision | haiku master `b9fdc8a9e6` (2026-11-06), on top of patch 0001 |
 | Patches | `0002-app_server-ReadBitmap-read-front-buffer-areas-with-t.patch` (3 files, +6/−27), `0003-app_server-show-drag-bitmaps-with-a-hardware-cursor.patch` (2 files, +105/−7) |
 
-The three patches form one series:
+The five patches form one series:
 
 | Patch | Author | What it does |
 | --- | --- | --- |
 | 0001 | OBS Studio port session | `BScreen::ReadBitmap()` reads from the back buffer, so screen recorders stop stalling the desktop and pointer. See `app_server-readbitmap-report.md`. |
 | 0002 | this report | Corrects how 0001 handles the software cursor in areas read from the front buffer, and removes `HWInterface::SoftwareCursorFrame()`. Can be squashed into 0001. |
-| 0003 | this report | Uses the software cursor while a drag bitmap is shown, and keeps hidden cursors hidden. Independent of 0001 and 0002 apart from context lines. |
+| 0003 | this report | Uses the software cursor while a drag bitmap is shown, and keeps hidden cursors hidden. Touches only `AccelerantHWInterface`, so it is independent of the others. |
+| 0004 | OBS Studio port session | Never reads more into the bitmap than fits (an out-of-bounds write from 0001, and a related existing one). See `app_server-readbitmap-report.md`. |
+| 0005 | OBS Studio port session | Clips the `drawCursor` compositing to the bitmap (an existing out-of-bounds write). See `app_server-readbitmap-report.md`. |
 
 ## 1. Observed behavior
 
@@ -172,7 +174,10 @@ What was done:
 
   Their warnings are identical to unpatched master, and there are no errors from app_server code. The host's C++
   library headers produced unrelated errors.
-- **The series applies** with `git am` to master `b9fdc8a9e6` and reproduces the tested tree.
+- **The series applies.** All five patches apply in order (with `git am` and with `git apply`) to master
+  `b9fdc8a9e6` and to master `313814a` (2026-11-07), and reproduce the tested tree. 0004 and 0005 also apply
+  before 0003, and both orders give the same tree. The syntax check above was repeated on the full series
+  (0001–0005), with the same result.
 - **Reviewed against the source.** Every caller of the changed functions and every lock taken on those paths was
   traced. A separate AI review pass, which hadn't written the patches, checked the first version. It found:
   1. the colour-space gap in `_DragBitmapShown()`;
@@ -207,4 +212,5 @@ RTX 5070 machine (with the hardware-cursor accelerant) and add results here.
 
 ## 6. The patches
 
-`0001-…`, `0002-…` and `0003-…` next to this report apply with `git am`, in order, to master `b9fdc8a9e6`.
+`0001-…` to `0005-…` next to this report apply with `git am`, in order, to master `b9fdc8a9e6` (and current
+master).
