@@ -1,9 +1,9 @@
 # nvidia-haiku
 
 > **This is Techniix's fork of [X547/nvidia-haiku](https://github.com/X547/nvidia-haiku)**, used to bring up the GeForce RTX 5070 (Blackwell).
-> Branches: `rtx5070-dev` (570.133.07, submodules point at this account's forks), `test-a-570.86.16` (X547's 570.86.16 plus the fixes), and `x547/rtx5070-v2` (the same changes as a clean series for upstream, submodule URLs unchanged; `x547/rtx5070` is an older ordering).
+> **`rtx5070-event-sync`** (default, recommended) builds NVK from X547's `nvrm-event-sync-r4` Mesa branch (Mesa 26.2.2): submissions no longer wait for the GPU to finish. Fixes for the kernel driver, NVK and the window-system layer are included; NVK and VideoStreamsWsi fixes are applied from `tools/patches/`. Runs OpenCE through Zink on an RTX 5070 without freezes. See [docs/event-sync.md](docs/event-sync.md) for what changed, why, and what is still open.
+> Other branches: `rtx5070-dev` (the older Mesa 25.3 NVK, which waits for the GPU after every submit; the known-good fallback), `test-a-570.86.16` (X547's 570.86.16 plus the fixes), `x547/rtx5070-v2` (the RTX 5070 bring-up as a clean series for upstream; `x547/rtx5070` is an older ordering), and `x547/version-check` (the kernel fixes event-sync NVK needs, on X547's `master`).
 > Prebuilt test builds are on the [Releases](https://github.com/Techniix/nvidia-haiku/releases) page.
-> **`rtx5070-event-sync`** (this branch) builds NVK from X547's `nvrm-event-sync-r4` Mesa branch (Mesa 26.2.2): submissions no longer wait for the GPU to finish. Fixes for NVK and the window-system layer are applied from `tools/patches/`. Running on an RTX 5070; see [docs/event-sync.md](docs/event-sync.md) for what changed, why, and what is still open.
 > NVK and NVIDIA-tree changes live in [Techniix/mesa](https://github.com/Techniix/mesa) (`rtx5070-dev`) and [Techniix/open-gpu-kernel-modules](https://github.com/Techniix/open-gpu-kernel-modules) (`570.133.07-haiku`).
 
 A hardware-accelerated graphics driver for NVIDIA GPUs on [Haiku](https://www.haiku-os.org), built on NVIDIA's [open GPU kernel modules](https://github.com/NVIDIA/open-gpu-kernel-modules). It provides modesetting, Vulkan through Mesa's NVK, and OpenGL through Zink.
