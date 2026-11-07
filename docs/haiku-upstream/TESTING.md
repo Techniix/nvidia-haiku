@@ -58,6 +58,14 @@ which jam || pkgman install jam
 mkdir generated.x86_64 && cd generated.x86_64
 ../configure --target-arch x86_64
 grep -n "HAIKU_BOOT_32_LIBGCC_x86_64" build/BuildConfig   # should end in "?= ;"
+# Only after applying build-fix (no 32-bit libgcc): makebootable, which is in
+# haiku.hpkg, embeds the BIOS stage 1 boot block (stage1.bin), whose rule lives
+# with the BIOS loader that is now skipped. Assemble it the same way the build
+# does (NASM only) and point jam at it:
+mkdir -p stage1
+nasm -f bin -O5 -dKERNEL_PLATFORM=bios_ia32 -I../src/system/boot/platform/bios_ia32/ \
+  -o stage1/stage1.bin ../src/system/boot/platform/bios_ia32/stage1.nasm
+echo "SEARCH on stage1.bin = $PWD/stage1 ;" >> UserBuildConfig
 jam -q -j$(nproc) app_server      # quick compile check
 jam -q -j$(nproc) haiku.hpkg
 find . -name haiku.hpkg
