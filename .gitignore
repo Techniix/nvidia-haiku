@@ -1,2 +1,4 @@
 tests/build.*/
 tests/sync-pool/build.*/
+tests/accelerant-cursor/build.*/
+tests/chan-report/build.*/
