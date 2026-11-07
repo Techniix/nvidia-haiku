@@ -33,6 +33,12 @@ public:
 	inline NvHandle Detach();
 
 	inline NvRmObject Alloc(NvV32 hClass, void *params, NvU32 paramsSize = 0) const;
+
+private:
+	// Destructors and move assignment must not throw (a throw out of a
+	// destructor terminates the process, here app_server).
+	inline void FreeQuietly() noexcept;
+public:
 	inline void Control(NvV32 cmd, void *params, NvU32 paramsSize, NvU32 flags = 0) const;
 };
 
@@ -85,18 +91,28 @@ NvRmObject::NvRmObject(NvRmObject &&other):
 	other.fHObject = 0;
 }
 
-NvRmObject::~NvRmObject()
+void NvRmObject::FreeQuietly() noexcept
 {
 	if (fHObject != 0) {
-		fRm->Free(fHObject);
+		try {
+			fRm->Free(fHObject);
+		} catch (...) {
+		}
+		fHObject = 0;
 	}
+}
+
+NvRmObject::~NvRmObject()
+{
+	FreeQuietly();
 }
 
 NvRmObject &NvRmObject::operator=(NvRmObject &&other)
 {
-	if (fHObject != 0) {
-		fRm->Free(fHObject);
+	if (this == &other) {
+		return *this;
 	}
+	FreeQuietly();
 	fRm = other.fRm;
 	fHObject = other.fHObject;
 	other.fHObject = 0;

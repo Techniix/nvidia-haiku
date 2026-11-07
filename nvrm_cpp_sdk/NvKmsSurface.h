@@ -50,15 +50,25 @@ NvKmsSurface::NvKmsSurface(NvKmsSurface &&other):
 
 NvKmsSurface::~NvKmsSurface()
 {
+	// Must not throw: see NvRmObject::FreeQuietly().
 	if (fHandle != 0) {
-		Delete();
+		try {
+			Delete();
+		} catch (...) {
+		}
 	}
 }
 
 NvKmsSurface &NvKmsSurface::operator=(NvKmsSurface &&other)
 {
+	if (this == &other) {
+		return *this;
+	}
 	if (fHandle != 0) {
-		Delete();
+		try {
+			Delete();
+		} catch (...) {
+		}
 	}
 	fKmsDev = other.fKmsDev;
 	fHandle = other.fHandle;
