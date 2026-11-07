@@ -3,7 +3,7 @@
 > **This is Techniix's fork of [X547/nvidia-haiku](https://github.com/X547/nvidia-haiku)**, used to bring up the GeForce RTX 5070 (Blackwell).
 > Branches: `rtx5070-dev` (570.133.07, submodules point at this account's forks), `test-a-570.86.16` (X547's 570.86.16 plus the fixes), and `x547/rtx5070-v2` (the same changes as a clean series for upstream, submodule URLs unchanged; `x547/rtx5070` is an older ordering).
 > Prebuilt test builds are on the [Releases](https://github.com/Techniix/nvidia-haiku/releases) page.
-> **`rtx5070-event-sync`** (this branch, experimental) builds NVK from X547's `nvrm-event-sync-r4` Mesa branch (Mesa 26.2.2): submissions no longer wait for the GPU to finish. The shader-model fix is applied from `tools/patches/mesa-nvk/`.
+> **`rtx5070-event-sync`** (this branch) builds NVK from X547's `nvrm-event-sync-r4` Mesa branch (Mesa 26.2.2): submissions no longer wait for the GPU to finish. Fixes for NVK and the window-system layer are applied from `tools/patches/`. Running on an RTX 5070; see [docs/event-sync.md](docs/event-sync.md) for what changed, why, and what is still open.
 > NVK and NVIDIA-tree changes live in [Techniix/mesa](https://github.com/Techniix/mesa) (`rtx5070-dev`) and [Techniix/open-gpu-kernel-modules](https://github.com/Techniix/open-gpu-kernel-modules) (`570.133.07-haiku`).
 
 A hardware-accelerated graphics driver for NVIDIA GPUs on [Haiku](https://www.haiku-os.org), built on NVIDIA's [open GPU kernel modules](https://github.com/NVIDIA/open-gpu-kernel-modules). It provides modesetting, Vulkan through Mesa's NVK, and OpenGL through Zink.
@@ -107,6 +107,7 @@ The firmware search order is user non-packaged, user, system non-packaged, then 
 - `[!!!] <name>: not implemented` in the log, or as a panic, names an OS-interface function from `stubs.c` that RM reached.
 - `NVK_NVRM_DEBUG=1` makes NVK print the device description it uses: chipset, shader model, GPC/TPC counts, VRAM and BAR1 size.
 - If an application renders garbage, check that it loads this NVK: `VK_LOADER_DEBUG=driver` prints the driver chosen. An older NVK installed system-wide (for example by the `nebula` package, in `/boot/system/add-ons/vulkan/icd.d`) can take precedence; set `VK_DRIVER_FILES` to this build's `nouveau_icd.x86_64.json` to use it alone.
+- With the event-sync NVK, stuck waits report themselves on stderr (`nvk/nvrm: ...`), and `NVK_NVRM_TRACE=<file>` logs every RM call to disk. See [docs/event-sync.md](docs/event-sync.md#debugging-aids).
 - Boot-menu *Debug options* can save the previous session's syslog to `/var/log/previous_syslog`, or to a file on another volume when Haiku doesn't boot.
 
 ## Status
@@ -119,5 +120,7 @@ Tested on a GeForce RTX 5070 (`10DE:2F04`, GB205, Blackwell), November 2026:
 | --- | --- | --- | --- |
 | 570.133.07 (`rtx5070-dev`) | Loads `570.133.07/gsp_ga10x.bin`, family gb20x | NVIDIA GeForce RTX 5070 (NVK GB205-A) | Correct |
 | 570.86.16 (`test-a-570.86.16`) | Loads `570.86.16/gsp_ga10x.bin`, family gb20x | NVIDIA Graphics Device (NVK GB205-A) | Correct |
+
+On `rtx5070-event-sync` (Mesa 26.2.2 NVK), the same card runs OpenCE through Zink without freezes; details in [docs/event-sync.md](docs/event-sync.md#status).
 
 On GB205, RM reports shader model `0xa04`; NVK now takes SM 120 from the chip ID instead, which fixed the scattered, stretched geometry seen before. Other Turing-and-newer GPUs should work but are untested with these changes.
