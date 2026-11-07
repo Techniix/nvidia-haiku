@@ -21,7 +21,7 @@ Tested on a GeForce RTX 5070 (`10DE:2F04`, GB205), Haiku hrev60368, November 202
 | OpenCE (Halo) through Zink | Runs and quits normally; no freezes |
 | Frame tearing | Rare (a line now and then), much less than before the VideoStreamsWsi fix |
 | Firefox through Zink | Starts and renders; long sessions not tested yet |
-| OBS Studio through Zink | Hung in its first frames before `0008`; the fix is not yet tested on hardware |
+| OBS Studio through Zink | Still hangs in its first frames with `0008` (`timeline wait_value 13: value 11 submit_seq 13`), and the deferred-reuse path never runs, so this is a different cause. `0009` adds the diagnostics to find it |
 
 ## Changes in this branch
 
@@ -44,7 +44,8 @@ Tested on a GeForce RTX 5070 (`10DE:2F04`, GB205), Haiku hrev60368, November 202
 | `0005` | Does not offer `VK_EXT_external_memory_host` on Haiku. Host-pointer import goes through `ALLOC_OS_DESCRIPTOR`, which needs `os_lock_user_pages()`, still a panic stub in the kernel driver. |
 | `0006` | Reports waits that stall: a CPU wait on a fence or semaphore, or a channel wait, prints its state to stderr after 3 s and then every 5 s (`nvk/nvrm: ...`). The wait itself is unchanged. |
 | `0007` | Bounds GPFIFO reuse by the channel fence instead of USERD `GPGet`. See below. |
-| `0008` | Does not reuse sync backing (a pool slot, or a dedicated sync's memory) while queued GPU work may still use it, and stops a reset binary semaphore from reading signaled again. Fixes the OBS Studio hang. See below. |
+| `0008` | Does not reuse sync backing (a pool slot, or a dedicated sync's memory) while queued GPU work may still use it, and stops a reset binary semaphore from reading signaled again. Found while chasing the OBS hang; OBS still hangs with it (see Open issues). See below. |
+| `0009` | When a CPU wait stalls, also reports what every GPU channel is doing (see Debugging aids), and fails the wait with `VK_ERROR_DEVICE_LOST` if a channel has stopped with an RC error, instead of waiting forever. Diagnostics only otherwise. |
 
 **The GPFIFO hang (`0007`).** Applications froze a few seconds into rendering, and Halo also froze on quit. The render thread was in `vkQueueSubmit -> nvk_queue_submit -> nvkmd_nvrm_exec_ctx_exec -> chan_write_gp_fifo_entry -> poll`, waiting for USERD `GPGet` to move away from the next `GPPut`. The slot-recycle wait, which reads the channel's fence semaphore, never stalled, so the GPU was completing work, but `GPGet` as read through the CPU mapping did not keep up. Once `GPPut` wrapped around the 0x8000-entry ring and met the stale value, the loop waited forever. The fix records `GPPut` at the end of each submit cycle next to its fence, and treats the `GPPut` of the newest completed cycle as the host's read position. This never frees an entry before the host has executed it. Why `GPGet` does not advance as seen by the CPU is not understood yet.
 
@@ -105,6 +106,10 @@ Reboot after any change to the kernel driver. For NVK, Zink or VideoStreamsWsi c
 ## Debugging aids
 
 - `nvk/nvrm: ... not satisfied` or `... waiting` on stderr (`0006`) names a stuck wait and its counters.
+- With `0009`, the first stall report of a wait, and every 30 s after, also prints each channel (`exec` for a queue, `copy` for NVK's upload queue, `bind` for sparse binding). Reading it:
+  - **`RC ERROR status 0x…`**: the channel was stopped by a GPU error, usually a fault. The wait then fails with `VK_ERROR_DEVICE_LOST`. Look in the syslog (`grep -a -iE "nvrm|xid|fault" /var/log/syslog`) for the kernel driver's reason.
+  - **An `acquire … NOT satisfied` on a channel short of its submitted fence**: the GPU is parked on that semaphore. The address identifies it: match it against the wait lines (`gpu 0x…`) and the other channels' releases. The value it needs never arrived.
+  - **Every channel idle, but the waited-for value still short**, with a release of that value listed as `done`: the releases ran out of order, and a later one wrote a lower value over it.
 - `NVK_NVRM_TRACE=<file>` (`0004`) records every RM call. If the last line starts with `>`, the system hung inside that call.
 - An application that hangs with no stall message: open `Debugger --team <id>`, select the busiest thread, click **Debug**, then save a report. Threads must be stopped to appear in the report. Debugger may fail to stop Zink's helper threads, whose names are garbled.
 - `listimage <team> | grep nouveau` shows which NVK an application loaded. Run without a team ID, it lists every process.
@@ -118,5 +123,10 @@ Reboot after any change to the kernel driver. For NVK, Zink or VideoStreamsWsi c
 - **Rare tearing** remains. If app_server falls more than a frame behind, a fourth present bitmap may help.
 - **`GALLIUM_THREAD=0`** makes Halo crash during startup. Not investigated; normal runs use threading.
 - **Firefox kill hang.** On the older driver, closing a frozen Firefox could hang the system in teardown. Not reproduced on this branch yet; long Firefox sessions still need testing.
-- **OBS on hardware.** `0008` was found and fixed from the code, and checked with the host harness and compile checks only. Still to be done on the RTX 5070: `tests/build.sh run`, `tests/sync-pool/run.sh`, OBS (preview, recording, resize, projector) and OpenCE. A run that took the fixed path prints the one-time `nvk/nvrm: deferring reuse of a sync slot ...` line.
+- **OBS still hangs on the RTX 5070** with `0008` installed, confirmed by `strings` in the NVK that loaded: `CPU wait not satisfied after 3.0 s (1 sync, all) / timeline wait_value 13: value 11 submit_seq 13 wait_seq 0 reset_mark 0`, repeating, at 0 FPS. The one-time `deferring reuse` line never appears, so no sync memory was freed while GPU work was queued. Submissions 12 and 13 were emitted, but their releases didn't run. From the code, three causes remain, which the counters alone can't tell apart:
+  1. **A channel stopped by an RC error** (a GPU fault). NVK never checked for that during CPU waits, so the wait spun forever with nothing else printed.
+  2. **The exec channel parked on a semaphore acquire.** OBS renders surfaceless, so Zink adds no GPU waits of its own. The one NVK adds is for its upload queue's timeline, released by the separate `copy` channel.
+  3. **Releases of the timeline executed out of order.** A release writes its payload rather than the maximum, so one that runs late can leave the value at 11 after all the work has completed. Zink assigns `batch_id` before taking `queue_lock`, so this needs Zink submitting from several threads, which only happens without its flush thread (`GALLIUM_THREAD=0`, or `ZINK_DEBUG=flushsync`). OBS doesn't set either.
+
+  `0009`'s channel report distinguishes all three. It has been compiled and run against fake channels on Linux (ASan/UBSan); the series applies to the pinned Mesa commit. It is not yet built for Haiku.
 - **Upstream.** The kernel string functions, `0007` and the VideoStreamsWsi fix apply to X547's trees too and should be offered there.
