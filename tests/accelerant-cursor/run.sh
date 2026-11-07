@@ -38,6 +38,16 @@ if [ "$(uname -s)" != Haiku ]; then
 	san="-fsanitize=address,undefined -fno-omit-frame-pointer"
 fi
 
+if [ "$(uname -s)" = Haiku ]; then
+	# Accelerant.cpp has narrowing warnings of its own; they are not what
+	# this test is about.
+	defs="$defs -Wno-narrowing"
+elif [ -n "${HAIKU_IOCTL:-}" ]; then
+	# Make ioctl() call __ioctl() as Haiku's C++ headers do, to exercise
+	# that path on a non-Haiku host.
+	defs="$defs -include $here/haiku-ioctl-shim.h"
+fi
+
 CXX="${CXX:-g++}"
 CC="${CC:-gcc}"
 flags="-O1 -g -U_FORTIFY_SOURCE $defs $san $inc"
@@ -48,7 +58,8 @@ srcs="$repo/accelerant/Accelerant.cpp $repo/accelerant/NvKmsBitmap.cpp \
  $repo/nvrm_cpp_sdk/NvRmApi.cpp $repo/nvrm_cpp_sdk/NvRmDevice.cpp \
  $repo/nvrm_cpp_sdk/NvKmsApi.cpp $repo/nvrm_cpp_sdk/NvKmsDevice.cpp \
  $repo/nvrm_cpp_sdk/NvKmsSurface.cpp $here/cursor-test.cpp"
-wraps="-Wl,--wrap=open -Wl,--wrap=close -Wl,--wrap=ioctl -Wl,--wrap=delete_area \
+wraps="-Wl,--wrap=open -Wl,--wrap=close -Wl,--wrap=ioctl -Wl,--wrap=__ioctl \
+ -Wl,--wrap=delete_area \
  -Wl,--wrap=load_driver_settings -Wl,--wrap=get_driver_boolean_parameter \
  -Wl,--wrap=unload_driver_settings"
 $CXX -std=c++20 $flags $srcs "$out/nvstatus.o" $wraps -o "$out/cursor-test"

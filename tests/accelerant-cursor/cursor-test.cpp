@@ -475,13 +475,8 @@ int __wrap_close(int fd)
 	return __real_close(fd);
 }
 
-int __wrap_ioctl(int fd, unsigned long op, ...)
+static int FakeIoctl(int fd, unsigned long op, void *arg)
 {
-	va_list ap;
-	va_start(ap, op);
-	void *arg = va_arg(ap, void*);
-	va_end(ap);
-
 	auto it = sKernel.fds.find(fd);
 	if (it == sKernel.fds.end()) {
 		errno = EBADF;
@@ -491,6 +486,24 @@ int __wrap_ioctl(int fd, unsigned long op, ...)
 	if (it->second == kFdModeset)
 		return sKernel.KmsIoctl(cmd, arg);
 	return sKernel.RmIoctl(fd, cmd, arg);
+}
+
+// glibc, and Haiku's C headers: ioctl(fd, op, ...)
+int __wrap_ioctl(int fd, unsigned long op, ...)
+{
+	va_list ap;
+	va_start(ap, op);
+	void *arg = va_arg(ap, void*);
+	va_end(ap);
+	return FakeIoctl(fd, op, arg);
+}
+
+// Haiku's C++ headers: ioctl() is an inline function calling
+// __ioctl(fd, op, argument, size), so that is what has to be wrapped there.
+int __wrap___ioctl(int fd, unsigned long op, void *arg, size_t size)
+{
+	(void)size;
+	return FakeIoctl(fd, op, arg);
 }
 
 status_t __wrap_delete_area(area_id id)
@@ -717,6 +730,11 @@ static void TestHardwareCursor()
 
 	int devFd = open("/dev/null", O_RDWR);
 	CHECK(h.init(devFd) == B_OK, "init_accelerant");
+	if (sFailures != 0) {
+		// Nothing below can work without an accelerant.
+		close(devFd);
+		return;
+	}
 
 	// app_server: set the mode, then the cursor (AccelerantHWInterface::SetCursor)
 	SetDisplayMode(h);
@@ -899,7 +917,10 @@ static void TestTimingEnabled()
 		Hooks h;
 		h.Load();
 		int devFd = open("/dev/null", O_RDWR);
-		CHECK(h.init(devFd) == B_OK, "init_accelerant");
+		if (h.init(devFd) != B_OK) {
+			fprintf(stderr, "FAIL: init_accelerant\n");
+			_exit(1);
+		}
 		SetDisplayMode(h);
 		for (int i = 0; i < 70; i++)
 			CHECK(SetBitmap(h, 20, 20, 0, 0) == B_OK, "cursor with timing");
@@ -928,7 +949,10 @@ static void TestCleanupFailures()
 		Hooks h;
 		h.Load();
 		int devFd = open("/dev/null", O_RDWR);
-		CHECK(h.init(devFd) == B_OK, "init_accelerant");
+		if (h.init(devFd) != B_OK) {
+			fprintf(stderr, "FAIL: init_accelerant\n");
+			_exit(1);
+		}
 		SetDisplayMode(h);
 		CHECK(SetBitmap(h, 20, 20, 0, 0) == B_OK, "cursor");
 		h.show(true);
