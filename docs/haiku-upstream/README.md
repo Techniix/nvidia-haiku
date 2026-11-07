@@ -16,4 +16,6 @@ The OBS files are copied from `docs/haiku/upstream/` in the OBS repository at co
 - **0005** fixes an out-of-bounds write that already existed in `ReadBitmap()`'s `drawCursor` compositing. It stands alone.
 - **0003** (drag bitmaps and hidden cursors with a hardware cursor) touches only `AccelerantHWInterface`. It is independent of the others: 0004 and 0005 apply before or after it, and both orders give the same tree.
 
+`build-fix/` holds Haiku's own commit `db67a42`, unchanged, which lets `haiku.hpkg` build natively without a 32-bit libgcc; it is only needed for revisions that predate it (see `TESTING.md`).
+
 All five apply in order (0001 to 0005), with `git am` or `git apply`, to haiku master `b9fdc8a9e6` and to master `313814a` of 2026-11-07. `TESTING.md` shows how to build and install them on Haiku, and how to go back.

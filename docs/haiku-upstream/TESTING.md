@@ -37,17 +37,27 @@ P=~/nvidia-haiku/docs/haiku-upstream
 for f in $P/0001-*.patch $P/0002-*.patch $P/0003-*.patch $P/0004-*.patch $P/0005-*.patch; do
 	git apply --check "$f" && git apply "$f" && echo "applied $(basename $f)" || { echo "FAILED: $f"; break; }
 done
-git status --short     # 8 modified files, all under src/servers/app
+git status --short     # 8 modified files under src/servers/app
 ```
 
 All five lines should say `applied`. The patches were made against master of 2026-11-06 and also apply to master of 2026-11-07. If a `--check` fails, send the error and the hrev and they'll be rebased.
 
 ## 3. Configure, build, install
 
+Haiku revisions older than Haiku's commit `db67a42` (2026-11-06, "configure & ArchitectureRules: Detect the absence of 32-bit libgcc"), such as hrev60368, can't build `haiku.hpkg` natively: the 32-bit BIOS boot loader fails to link (`undefined reference to __divdi3`). Apply that upstream commit first; `build-fix/` holds it unchanged. Skip this if `git apply --check` says it is already applied.
+
+```sh
+git apply --check ~/nvidia-haiku/docs/haiku-upstream/build-fix/0001-*.patch \
+  && git apply ~/nvidia-haiku/docs/haiku-upstream/build-fix/0001-*.patch
+```
+
+This only changes the build rules: without a 32-bit libgcc, only the EFI loader is built, and `haiku.hpkg` then lacks the PXE (network boot) loader. The BIOS loader lives in the separate `haiku_loader` package, which this doesn't replace.
+
 ```sh
 which jam || pkgman install jam
 mkdir generated.x86_64 && cd generated.x86_64
 ../configure --target-arch x86_64
+grep -n "HAIKU_BOOT_32_LIBGCC_x86_64" build/BuildConfig   # should end in "?= ;"
 jam -q -j$(nproc) app_server      # quick compile check
 jam -q -j$(nproc) haiku.hpkg
 find . -name haiku.hpkg

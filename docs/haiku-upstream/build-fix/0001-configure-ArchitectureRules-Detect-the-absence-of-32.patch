@@ -1,0 +1,35 @@
+From db67a4294121300ac7bb94127f21532ac3b4e7c8 Mon Sep 17 00:00:00 2001
+From: Augustin Cavalier <waddlesplash@gmail.com>
+Date: Fri, 6 Nov 2026 17:03:00 +0100
+Subject: [PATCH] configure & ArchitectureRules: Detect the absence of 32-bit
+ libgcc.
+
+GCC -m32 just prints the 64-bit libraries in that case it seems,
+so just clear those variables and then do nothing.
+
+Allows building haiku.hpkg on x86_64 Haiku with no cross-tools
+(and no modifications to the source tree) again.
+---
+ build/jam/ArchitectureRules | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/build/jam/ArchitectureRules b/build/jam/ArchitectureRules
+index 074bae5..4d19860 100644
+--- a/build/jam/ArchitectureRules
++++ b/build/jam/ArchitectureRules
+@@ -300,7 +300,11 @@ rule KernelArchitectureSetup architecture
+ 		case x86_64 :
+ 			# x86_64 completely shares the x86 bootloader for MBR.
+ 			HAIKU_KERNEL_PLATFORM ?= bios_ia32 ;
+-			HAIKU_BOOT_TARGETS += bios_ia32 efi pxe_ia32 ;
++			if $(HAIKU_BOOT_32_LIBGCC_x86_64) != "" {
++				HAIKU_BOOT_TARGETS = bios_ia32 efi pxe_ia32 ;
++			} else {
++				HAIKU_BOOT_TARGETS = efi ;
++			}
+ 
+ 			HAIKU_BOOT_FLOPPY_IMAGE_SIZE = 2880 ; # in kB
+ 			# offset in floppy image (>= sizeof(haiku_loader))
+-- 
+2.43.0
+
