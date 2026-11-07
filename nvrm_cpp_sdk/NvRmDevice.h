@@ -107,6 +107,9 @@ NvRmMemoryMapping::NvRmMemoryMapping(NvRmMemoryMapping &&other):
 #endif
 {
 	other.fAddress = nullptr;
+#ifdef __HAIKU__
+	other.fArea = -1;
+#endif
 }
 
 NvRmMemoryMapping::~NvRmMemoryMapping()
@@ -118,6 +121,9 @@ NvRmMemoryMapping::~NvRmMemoryMapping()
 
 NvRmMemoryMapping &NvRmMemoryMapping::operator=(NvRmMemoryMapping &&other)
 {
+	if (this == &other) {
+		return *this;
+	}
 	if (IsSet()) {
 		Delete();
 	}
@@ -128,6 +134,12 @@ NvRmMemoryMapping &NvRmMemoryMapping::operator=(NvRmMemoryMapping &&other)
 	fFlags = other.fFlags;
 	fAddress = other.fAddress;
 	fSize = other.fSize;
+#ifdef __HAIKU__
+	// Without this the area of a moved-in mapping was never deleted (and
+	// this object kept the id of the area it had just deleted).
+	fArea = other.fArea;
+	other.fArea = -1;
+#endif
 
 	other.fAddress = nullptr;
 	return *this;

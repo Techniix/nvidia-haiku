@@ -22,12 +22,18 @@ extern "C" {
 
 void NvRmMemoryMapping::Delete()
 {
+	// Called from the destructor and move assignment: must not throw.
 #ifdef __HAIKU__
 	delete_area(fArea);
+	fArea = -1;
 #else
 	munmap(fAddress, fSize);
 #endif
-	fRm->UnmapMemory(fHDevice, fHMemory, fPLinearAddress, fFlags);
+	try {
+		fRm->UnmapMemory(fHDevice, fHMemory, fPLinearAddress, fFlags);
+	} catch (...) {
+	}
+	fAddress = nullptr;
 }
 
 
@@ -86,7 +92,16 @@ NvRmMemoryMapping NvRmDevice::MapMemory(NvHandle hMemory, bool isSystemMemory, N
 		.protection = B_READ_AREA | B_WRITE_AREA,
 	};
 	int ret = NvRmIoctl(memFd.Get(), NV_HAIKU_MAP, &mapParams, sizeof(mapParams));
-	CheckErrno(ret); // TODO: call rm.UnmapMemory on fail
+	if (ret < 0) {
+		// Don't leave the RM mapping behind; report the map error, not
+		// whatever the unmap does to errno.
+		int mapErrno = errno;
+		try {
+			rm.UnmapMemory(fDevice.Get(), hMemory, pLinearAddress, flags);
+		} catch (const std::system_error&) {
+		}
+		RaiseErrno(mapErrno);
+	}
 	return NvRmMemoryMapping(rm, fDevice.Get(), hMemory, pLinearAddress, flags, mapParams.address, length, ret);
 #else
 	void *address = (void*)mmap(0, length, PROT_READ|PROT_WRITE, MAP_SHARED, memFd.Get(), 0);

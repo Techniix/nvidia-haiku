@@ -30,7 +30,9 @@ void RaiseErrno(int err)
 
 void RaiseNvStatus(NV_STATUS res)
 {
-	throw std::system_error(res, NvStatusErrorCategory());
+	// std::system_error keeps a reference to its category: it must outlive
+	// the exception, so use the static instance, not a temporary.
+	throw std::system_error(res, NvStatusErrorCategory::Instance());
 #if 0
 	fprintf(stderr, "[!] %s(%#x)\n", nvstatusToString(res), res);
 	abort();
