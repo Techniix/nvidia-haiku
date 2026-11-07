@@ -102,28 +102,6 @@ buildProject nvrm_cpp_sdk
 buildProject nvidia_gsp
 buildProject accelerant
 buildProject NvKmsTest
-# Current Haiku's <pthread.h> only defines the _NP spelling of the
-# recursive mutex initializer, which VideoStreamsWsi uses unsuffixed. Map
-# it only when the compiler lacks the plain name, so older Haiku is unchanged.
-function hasPthreadMacro {
-	printf '#include <pthread.h>\n#ifndef %s\n#error missing\n#endif\n' "$1" |
-		c++ -fsyntax-only -x c++ - >/dev/null 2>&1
-}
-vswArgs=()
-if ! hasPthreadMacro PTHREAD_RECURSIVE_MUTEX_INITIALIZER &&
-		hasPthreadMacro PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP; then
-	vswArgs+=(-Dcpp_args=-DPTHREAD_RECURSIVE_MUTEX_INITIALIZER=PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP)
-fi
-buildProject VideoStreamsWsi "${vswArgs[@]}"
-
-# libclc and SPIRV-LLVM-Translator are not in HaikuPorts; tools/build-clc-deps.sh
-# builds them here. The /boot/data/packages paths are the original author's.
-clcDeps="${DEPS_DIR:-$baseDir/deps.$(getarch)}/install"
-if [ -n "$(projectDir mesa-nvk)" ] && [ ! -e "$clcDeps/share/pkgconfig/libclc.pc" ] &&
-		[ ! -e /boot/data/packages/llvm-project/build-libclc.x86_64/install/share/pkgconfig/libclc.pc ]; then
-	echo "libclc not found: run tools/build-clc-deps.sh first (NVK needs it to build)." >&2
-	exit 1
-fi
 # Local fixes for submodules live in tools/patches/<submodule>/*.patch and are
 # applied in order on top of the pinned commit; already-applied patches are
 # skipped, so this is safe to run on every build.
@@ -140,6 +118,29 @@ function applyPatches {
 		git -C "$dir" apply "$patch"
 	done
 }
+# Current Haiku's <pthread.h> only defines the _NP spelling of the
+# recursive mutex initializer, which VideoStreamsWsi uses unsuffixed. Map
+# it only when the compiler lacks the plain name, so older Haiku is unchanged.
+function hasPthreadMacro {
+	printf '#include <pthread.h>\n#ifndef %s\n#error missing\n#endif\n' "$1" |
+		c++ -fsyntax-only -x c++ - >/dev/null 2>&1
+}
+vswArgs=()
+if ! hasPthreadMacro PTHREAD_RECURSIVE_MUTEX_INITIALIZER &&
+		hasPthreadMacro PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP; then
+	vswArgs+=(-Dcpp_args=-DPTHREAD_RECURSIVE_MUTEX_INITIALIZER=PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP)
+fi
+applyPatches VideoStreamsWsi
+buildProject VideoStreamsWsi "${vswArgs[@]}"
+
+# libclc and SPIRV-LLVM-Translator are not in HaikuPorts; tools/build-clc-deps.sh
+# builds them here. The /boot/data/packages paths are the original author's.
+clcDeps="${DEPS_DIR:-$baseDir/deps.$(getarch)}/install"
+if [ -n "$(projectDir mesa-nvk)" ] && [ ! -e "$clcDeps/share/pkgconfig/libclc.pc" ] &&
+		[ ! -e /boot/data/packages/llvm-project/build-libclc.x86_64/install/share/pkgconfig/libclc.pc ]; then
+	echo "libclc not found: run tools/build-clc-deps.sh first (NVK needs it to build)." >&2
+	exit 1
+fi
 applyPatches mesa-nvk
 
 # Newer NVK (X547's event-sync branch) takes the NVIDIA tree and release as

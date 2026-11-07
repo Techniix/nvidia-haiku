@@ -1,0 +1,205 @@
+From ea84e36bd9cfde95178a1c78eb9dc7b70d9b4da9 Mon Sep 17 00:00:00 2001
+From: Techniix <Techniix@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 00:02:55 -0500
+Subject: [PATCH] Rotate three present bitmaps so frames don't tear
+
+QueuePresent copied every frame into one host-visible image and kept
+handing the same BBitmap to the view. app_server draws that bitmap
+asynchronously, so a copy could land while it was being drawn, which
+shows as an occasional horizontal tear (VSync can't help: this path has
+no flip).
+
+Keep three images/bitmaps and copy each frame into one that is not on
+screen. The bitmap on screen belongs to the BitmapHook, as before; it
+comes back when SetBitmap() returns it, and one left by an earlier
+swapchain is deleted, as the old code did on the first present.
+---
+ Wsi.cpp | 108 +++++++++++++++++++++++++++++++++++++++-----------------
+ 1 file changed, 75 insertions(+), 33 deletions(-)
+
+diff --git a/Wsi.cpp b/Wsi.cpp
+index 1793f99..6bf6182 100644
+--- a/Wsi.cpp
++++ b/Wsi.cpp
+@@ -210,19 +210,28 @@ private:
+ 	uint32 fImageCnt;
+ 	ArrayDeleter<VKLayerImage> fImages;
+ 	BufferQueue fImagePool;
+-	ObjectDeleter<VKLayerImage> fBuffer;
++	// Host-visible copies of presented frames, shown in the window as
++	// BBitmaps. Several are rotated so a new frame is never copied into the
++	// bitmap app_server may still be drawing from (which tore the picture).
++	// While a bitmap is handed to the BitmapHook (it is on screen) the hook
++	// owns it; it comes back to us when the hook returns it from SetBitmap().
++	static constexpr uint32 kPresentBufferCount = 3;
++	struct PresentBuffer {
++		ObjectDeleter<VKLayerImage> image;
++		BBitmap *bitmap = NULL;
++		bool ownedByUs = true;
++	};
++	PresentBuffer fPresentBuffers[kPresentBufferCount];
++	uint32 fNextPresentBuffer = 0;
+ 	VkCommandPool fCommandPool = VK_NULL_HANDLE;
+ 	VkQueue fQueue = VK_NULL_HANDLE;
+ 	VkFence fFence = VK_NULL_HANDLE;
+ 	bool fRetired = false;
+ 
+-	ObjectDeleter<BBitmap> fBitmap;
+-	AreaDeleter fBitmapArea;
+-	BBitmap *fCurBitmap;
+-
+ 	VkImageCreateInfo ImageFromCreateInfo(const VkSwapchainCreateInfoKHR &createInfo);
+ 	VkResult CreateBuffer();
+-	VkResult CopyToBuffer(VkImage srcImage, int32_t width, int32_t height);
++	VkResult CopyToBuffer(VkImage srcImage, VkImage dstImage, int32_t width, int32_t height);
++	void ShowNextPresentBuffer(BitmapHook *bitmapHook, VkImage srcImage);
+ 	VkResult CheckSuboptimal();
+ 
+ public:
+@@ -454,6 +463,13 @@ VKLayerSwapchain::~VKLayerSwapchain()
+ 
+ 	fDevice->Hooks().DestroyFence(fDevice->ToHandle(), fFence, NULL);
+ 
++	// The bitmap on screen belongs to the hook and stays there until the next
++	// swapchain or the surface replaces it; delete only the ones we hold.
++	for (uint32 i = 0; i < kPresentBufferCount; i++) {
++		if (fPresentBuffers[i].ownedByUs)
++			delete fPresentBuffers[i].bitmap;
++	}
++
+ 	if (!fRetired) {
+ 		fSurface->fSwapchain = NULL;
+ 	}
+@@ -508,25 +524,28 @@ VkResult VKLayerSwapchain::CreateBuffer()
+ 		.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+ 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+ 	};
+-	fBuffer.SetTo(new(std::nothrow) VKLayerImage());
+-	if (!fBuffer.IsSet())
+-		return VK_ERROR_OUT_OF_HOST_MEMORY;
+-	area_id area;
+-	VkCheckRet(fBuffer->Init(fDevice, createInfo, true, &area));
+-//	fBitmapArea.SetTo(area);
+-
+-	VkImageSubresource subResource{.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
+-	VkSubresourceLayout subResourceLayout;
+-	fDevice->Hooks().GetImageSubresourceLayout(fDevice->ToHandle(), fBuffer->ToHandle(), &subResource, &subResourceLayout);
+-	fBitmap.SetTo(new(std::nothrow) BBitmap(area, 0, BRect(0, 0, fImageExtent.width - 1, fImageExtent.height - 1), B_BITMAP_IS_AREA, B_RGB32, subResourceLayout.rowPitch));
+-	if (!fBitmap.IsSet())
+-		return VK_ERROR_OUT_OF_HOST_MEMORY;
+-	fCurBitmap = fBitmap.Get();
++	for (uint32 i = 0; i < kPresentBufferCount; i++) {
++		PresentBuffer &buf = fPresentBuffers[i];
++		buf.image.SetTo(new(std::nothrow) VKLayerImage());
++		if (!buf.image.IsSet())
++			return VK_ERROR_OUT_OF_HOST_MEMORY;
++		area_id area;
++		VkCheckRet(buf.image->Init(fDevice, createInfo, true, &area));
++
++		VkImageSubresource subResource{.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
++		VkSubresourceLayout subResourceLayout;
++		fDevice->Hooks().GetImageSubresourceLayout(fDevice->ToHandle(), buf.image->ToHandle(), &subResource, &subResourceLayout);
++		buf.bitmap = new(std::nothrow) BBitmap(area, 0, BRect(0, 0, fImageExtent.width - 1, fImageExtent.height - 1), B_BITMAP_IS_AREA, B_RGB32, subResourceLayout.rowPitch);
++		if (buf.bitmap == NULL)
++			return VK_ERROR_OUT_OF_HOST_MEMORY;
++		buf.ownedByUs = true;
++	}
++	fNextPresentBuffer = 0;
+ 
+ 	return VK_SUCCESS;
+ }
+ 
+-VkResult VKLayerSwapchain::CopyToBuffer(VkImage srcImage, int32_t width, int32_t height)
++VkResult VKLayerSwapchain::CopyToBuffer(VkImage srcImage, VkImage dstImage, int32_t width, int32_t height)
+ {
+ 	// Do the actual blit from the offscreen image to our host visible destination image
+ 	VkCommandBufferAllocateInfo cmdBufAllocateInfo{
+@@ -544,7 +563,7 @@ VkResult VKLayerSwapchain::CopyToBuffer(VkImage srcImage, int32_t width, int32_t
+ 	insertImageMemoryBarrier(
+ 		fDevice,
+ 		copyCmd,
+-		fBuffer->ToHandle(),
++		dstImage,
+ 		0,
+ 		VK_ACCESS_TRANSFER_WRITE_BIT,
+ 		VK_IMAGE_LAYOUT_UNDEFINED,
+@@ -573,7 +592,7 @@ VkResult VKLayerSwapchain::CopyToBuffer(VkImage srcImage, int32_t width, int32_t
+ 	fDevice->Hooks().CmdBlitImage(
+ 		copyCmd,
+ 		srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+-		fBuffer->ToHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++		dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+ 		1,
+ 		&imageBlitRegion,
+ 		VK_FILTER_NEAREST
+@@ -600,7 +619,7 @@ VkResult VKLayerSwapchain::CopyToBuffer(VkImage srcImage, int32_t width, int32_t
+ 	fDevice->Hooks().CmdCopyImage(
+ 		copyCmd,
+ 		srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+-		fBuffer->ToHandle(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++		dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+ 		1,
+ 		&imageCopyRegion
+ 	);
+@@ -610,7 +629,7 @@ VkResult VKLayerSwapchain::CopyToBuffer(VkImage srcImage, int32_t width, int32_t
+ 	insertImageMemoryBarrier(
+ 		fDevice,
+ 		copyCmd,
+-		fBuffer->ToHandle(),
++		dstImage,
+ 		VK_ACCESS_TRANSFER_WRITE_BIT,
+ 		VK_ACCESS_MEMORY_READ_BIT,
+ 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+@@ -741,18 +760,41 @@ VkResult VKLayerSwapchain::QueuePresent(VkQueue queue, const VkPresentInfoKHR *p
+ 	/*assert(*/fImagePool.Add(imageIdx)/*)*/;
+ 
+ 	auto bitmapHook = fSurface->GetBitmapHook();
+-	if (bitmapHook != NULL) {
+-		CopyToBuffer(fImages[imageIdx].ToHandle(), fImageExtent.width, fImageExtent.height);
+-		if (fBitmap.IsSet()) {
+-			delete bitmapHook->SetBitmap(fBitmap.Detach());
+-		} else {
+-			bitmapHook->SetBitmap(fCurBitmap);
+-		}
+-	}
++	if (bitmapHook != NULL)
++		ShowNextPresentBuffer(bitmapHook, fImages[imageIdx].ToHandle());
+ 
+ 	return CheckSuboptimal();
+ }
+ 
++void VKLayerSwapchain::ShowNextPresentBuffer(BitmapHook *bitmapHook, VkImage srcImage)
++{
++	// Use the next buffer we hold; the one on screen is the hook's.
++	uint32 idx = fNextPresentBuffer;
++	for (uint32 tries = 0; tries < kPresentBufferCount && !fPresentBuffers[idx].ownedByUs; tries++)
++		idx = (idx + 1) % kPresentBufferCount;
++	PresentBuffer &buf = fPresentBuffers[idx];
++	if (!buf.ownedByUs)
++		return;
++	fNextPresentBuffer = (idx + 1) % kPresentBufferCount;
++
++	// CopyToBuffer() waits for the copy, so the bitmap is complete here.
++	if (CopyToBuffer(srcImage, buf.image->ToHandle(), fImageExtent.width, fImageExtent.height) != VK_SUCCESS)
++		return;
++
++	buf.ownedByUs = false;
++	BBitmap *old = bitmapHook->SetBitmap(buf.bitmap);
++	if (old == NULL)
++		return;
++	for (uint32 i = 0; i < kPresentBufferCount; i++) {
++		if (fPresentBuffers[i].bitmap == old) {
++			fPresentBuffers[i].ownedByUs = true;
++			return;
++		}
++	}
++	// Left on screen by an earlier swapchain (or the initial bitmap): ours now.
++	delete old;
++}
++
+ 
+ //#pragma mark - Surface
+ 
+-- 
+2.43.0
+
