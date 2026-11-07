@@ -80,10 +80,23 @@ for f in gsp_ga10x.bin gsp_tu10x.bin; do put "$fw/$f" "data/firmware/nvidia/$ver
 note "kernel driver, accelerant, firmware $version"
 
 # NVK, next to its manifest as Haiku's own Vulkan drivers are, so the
-# manifest needs no absolute path.
-put "$src/lib/libvulkan_nouveau.so" add-ons/vulkan/icd.d/libvulkan_nouveau.so
-icd="$(ls "$src"/data/vulkan/icd.d/nouveau_icd.*.json "$src"/share/vulkan/icd.d/nouveau_icd.*.json 2>/dev/null | head -1 || true)"
+# manifest needs no absolute path. Mesa 26 installs NVK and its manifest in
+# add-ons/vulkan/icd.d on Haiku; Mesa 25.3 used lib/ and data/vulkan/icd.d.
+# An install directory that has seen both keeps a stale copy of the other, so
+# take whichever library is newer, and the manifest that goes with it.
+nvkNew="$src/add-ons/vulkan/icd.d/libvulkan_nouveau.so"
+nvkOld="$src/lib/libvulkan_nouveau.so"
+if [ -e "$nvkNew" ] && ! [ "$nvkOld" -nt "$nvkNew" ]; then
+	nvk="$nvkNew"
+	icd="$(ls "$src"/add-ons/vulkan/icd.d/nouveau_icd.*.json 2>/dev/null | head -1 || true)"
+else
+	nvk="$nvkOld"
+	icd="$(ls "$src"/data/vulkan/icd.d/nouveau_icd.*.json "$src"/share/vulkan/icd.d/nouveau_icd.*.json 2>/dev/null | head -1 || true)"
+fi
+put "$nvk" add-ons/vulkan/icd.d/libvulkan_nouveau.so
 [ -n "$icd" ] || die "NVK manifest (nouveau_icd.*.json) not found in $src"
+nvkMesa="$(strings "$nvk" 2>/dev/null | grep -m1 -oE 'Mesa [0-9]+\.[0-9]+\.[0-9]+[^ ]*' || true)"
+note "NVK from ${nvk#$src/} (${nvkMesa:-Mesa version unknown})"
 mkdir -p "$stage/add-ons/vulkan/icd.d"
 sed -E 's#"library_path": *"[^"]*"#"library_path": "./libvulkan_nouveau.so"#' "$icd" \
 	> "$stage/add-ons/vulkan/icd.d/$(basename "$icd")"
