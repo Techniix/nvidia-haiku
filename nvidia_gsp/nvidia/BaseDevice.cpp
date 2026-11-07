@@ -218,10 +218,11 @@ status_t NvHaikuBaseDeviceHandle::Control(uint32 op, void *data, size_t len)
 			if (!IS_USER_ADDRESS(data))
 				return B_BAD_ADDRESS;
 			CHECK_RET(user_memcpy(&params, data, sizeof(params)));
-			if (rm_perform_version_check(nullptr, &params, sizeof(params)) != NV_OK)
-				return EINVAL;
+			NV_STATUS status = rm_perform_version_check(nullptr, &params, sizeof(params));
+			// Like Linux, copy the reply back even on a mismatch: it carries
+			// RM's version string for the client's error message.
 			CHECK_RET(user_memcpy(data, &params, sizeof(params)));
-			return B_OK;
+			return status == NV_OK ? B_OK : EINVAL;
 		}
 
 		case NV_ESC_CARD_INFO: {
