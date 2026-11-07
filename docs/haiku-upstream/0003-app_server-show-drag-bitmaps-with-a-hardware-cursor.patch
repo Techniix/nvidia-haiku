@@ -1,0 +1,222 @@
+From 18b520fd53ccb023afcaa973ddc40a867f75b18e Mon Sep 17 00:00:00 2001
+From: Techniix <Techniix@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 14:29:04 -0500
+Subject: [PATCH 3/3] app_server: show drag bitmaps with a hardware cursor
+
+With a hardware cursor, a drag bitmap (an icon dragged in Tracker, for
+example) is never shown: the accelerant is only given the cursor itself,
+and AccelerantHWInterface::_DrawCursor() draws nothing while
+fHardwareCursorEnabled, so the drag bitmap that _AdoptDragBitmap()
+combines with the cursor is never drawn. This affects every accelerant
+that exports B_SET_CURSOR_BITMAP, or B_SET_CURSOR_SHAPE for BCursor
+cursors.
+
+Use the software cursor while a drag bitmap is shown and the hardware
+cursor again when the drag ends:
+
+ * SetCursor() moves its hook handling into _UpdateHardwareCursor(),
+   which doesn't use the hardware while a drag bitmap the software
+   cursor can show is set (_DragBitmapShown(): the same tests as
+   _AdoptDragBitmap(), including its color spaces). When it switches
+   from hardware to software the cursor is now drawn
+   (_DrawSoftwareCursor()); HWInterface only draws it when the cursor or
+   drag bitmap changes.
+ * New SetDragBitmap() override: under the exclusive lock, calls
+   HWInterface::SetDragBitmap() (which draws into the frame buffer and
+   used to do so without that lock), then switches between hardware and
+   software if a switch is due. EventDispatcher clears the drag bitmap
+   after every drag; normally nothing needs switching then (it only
+   tries the hardware again if the cursor is in software).
+ * SetCursor() keeps the exclusive lock until HWInterface::SetCursor()
+   has set fCursor, so SetDragBitmap() can't hand the hardware an older
+   cursor in between. The lock is recursive.
+
+Also, SetCursor() called show_cursor(cursorSet) after every cursor
+change, which made a hidden cursor (SetCursorVisible(false), or obscured
+while typing) reappear on the next shape change. It now passes
+cursorSet && the cursor's visibility; SetCursorVisible() shows it again,
+including when an obscured cursor is moved.
+
+Lock order: SetDragBitmap() is called with the EventDispatcher lock held
+and takes the engine lock and then fFloatingOverlaysLock. The
+EventDispatcher -> engine order already exists (MouseFilter ->
+Desktop::SetCursor(), and MoveCursorTo() from the event loop when there
+is no cursor thread); no path takes them the other way round.
+
+This change was written by an AI assistant (Claude, Anthropic) at the
+request of a Haiku user and has only been syntax-checked and reviewed,
+not built or run. Haiku's policy does not accept AI-generated
+contributions; it is offered as a description of the problem and one
+possible fix, for a developer to rewrite or discard.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01AVRp8kiTtm6UwGrx2GPsdP
+---
+ .../interface/local/AccelerantHWInterface.cpp | 107 ++++++++++++++++--
+ .../interface/local/AccelerantHWInterface.h   |   5 +
+ 2 files changed, 105 insertions(+), 7 deletions(-)
+
+diff --git a/src/servers/app/drawing/interface/local/AccelerantHWInterface.cpp b/src/servers/app/drawing/interface/local/AccelerantHWInterface.cpp
+index 6b122d6..b627a81 100644
+--- a/src/servers/app/drawing/interface/local/AccelerantHWInterface.cpp
++++ b/src/servers/app/drawing/interface/local/AccelerantHWInterface.cpp
+@@ -1230,9 +1230,64 @@ AccelerantHWInterface::SetCursor(ServerCursor* cursor)
+ 	if (cursor == NULL || LockExclusiveAccess() == false)
+ 		return;
+ 
++	bool switchedToSoftware = _UpdateHardwareCursor(cursor);
++
++	HWInterface::SetCursor(cursor);
++		// HWInterface claims ownership of cursor.
++
++	if (switchedToSoftware)
++		_DrawSoftwareCursor();
++
++	UnlockExclusiveAccess();
++		// Only now: HWInterface::SetCursor() sets fCursor, which
++		// SetDragBitmap() reads, and the hardware must not be given an
++		// older cursor in between.
++}
++
++
++void
++AccelerantHWInterface::SetDragBitmap(const ServerBitmap* bitmap,
++	const BPoint& offsetFromCursor)
++{
++	// HWInterface::SetDragBitmap() draws the cursor and drag bitmap into
++	// the frame buffer; do that under the exclusive lock too.
++	if (!LockExclusiveAccess())
++		return;
++
++	HWInterface::SetDragBitmap(bitmap, offsetFromCursor);
++
++	// The hardware cursor can only show the cursor itself, and _DrawCursor()
++	// draws nothing while it is enabled, so a drag bitmap would not be
++	// visible. Re-decide: the software cursor is used while a drag bitmap is
++	// shown, the hardware cursor again when the drag ends.
++	// EventDispatcher clears the drag bitmap after every drag, with or
++	// without one: normally there is nothing to switch then.
++	if ((fAccSetCursorBitmap != NULL || fAccSetCursorShape != NULL)
++		&& _DragBitmapShown() == fHardwareCursorEnabled) {
++		ServerCursorReference cursor = Cursor();
++		if (cursor.IsSet() && _UpdateHardwareCursor(cursor.Get()))
++			_DrawSoftwareCursor();
++	}
++
++	UnlockExclusiveAccess();
++}
++
++
++/*!	Gives \a cursor to the accelerant if it can show it and no drag bitmap
++	is shown, and switches between the hardware and the software cursor.
++	The exclusive access lock must be held.
++	Returns whether it switched from the hardware to the software cursor;
++	the caller then has to draw it, see _DrawSoftwareCursor().
++*/
++bool
++AccelerantHWInterface::_UpdateHardwareCursor(ServerCursor* cursor)
++{
++	bool useHardware = !_DragBitmapShown();
++	bool visible = IsCursorVisible();
++
+ 	bool cursorSet = false;
+ 
+-	if (fAccSetCursorBitmap != NULL) {
++	if (useHardware && fAccSetCursorBitmap != NULL) {
+ 		// Bitmap cursor
+ 		// TODO are x and y switched for this, too?
+ 		uint16 xHotSpot = (uint16)cursor->GetHotSpot().x;
+@@ -1247,7 +1302,8 @@ AccelerantHWInterface::SetCursor(ServerCursor* cursor)
+ 			cursor->Bits()) == B_OK;
+ 	}
+ 
+-	if (!cursorSet && cursor->CursorData() != NULL && fAccSetCursorShape != NULL) {
++	if (useHardware && !cursorSet && cursor->CursorData() != NULL
++		&& fAccSetCursorShape != NULL) {
+ 		// BeOS BCursor, 16x16 monochrome
+ 		uint8 size = cursor->CursorData()[0];
+ 		// CursorData()[1] is color depth (always monochrome)
+@@ -1301,15 +1357,52 @@ AccelerantHWInterface::SetCursor(ServerCursor* cursor)
+ 				(uint16)fCursorLocation.y);
+ 	}
+ 
++	// Keep a hidden cursor hidden (SetCursorVisible() shows it again).
+ 	if (fAccShowCursor != NULL)
+-		fAccShowCursor(cursorSet);
+-
+-	UnlockExclusiveAccess();
++		fAccShowCursor(cursorSet && visible);
+ 
++	bool wasHardware = fHardwareCursorEnabled;
+ 	fHardwareCursorEnabled = cursorSet;
+ 
+-	HWInterface::SetCursor(cursor);
+-		// HWInterface claims ownership of cursor.
++	return wasHardware && !cursorSet;
++}
++
++
++/*!	Whether the software cursor would show a drag bitmap with the cursor:
++	the same tests as in _AdoptDragBitmap(), which ignores drag bitmaps in
++	other color spaces (switching to the software cursor would gain nothing
++	then, and its cursor shape would not follow cursor changes).
++*/
++bool
++AccelerantHWInterface::_DragBitmapShown() const
++{
++	bool shown = false;
++	if (fFloatingOverlaysLock.Lock()) {
++		shown = fDragBitmap != NULL
++			&& (fDragBitmap->ColorSpace() == B_RGB32
++				|| fDragBitmap->ColorSpace() == B_RGBA32)
++			&& fDragBitmap->Bounds().Width() > 0
++			&& fDragBitmap->Bounds().Height() > 0;
++		fFloatingOverlaysLock.Unlock();
++	}
++	return shown;
++}
++
++
++/*!	Draws the software cursor (and the drag bitmap, if any) after a switch
++	from the hardware cursor; HWInterface only draws it when the cursor or
++	drag bitmap changes. The exclusive access lock must be held.
++*/
++void
++AccelerantHWInterface::_DrawSoftwareCursor()
++{
++	if (fFloatingOverlaysLock.Lock()) {
++		if (IsDoubleBuffered())
++			Invalidate(_CursorFrame());
++		else
++			_DrawCursor(_CursorFrame());
++		fFloatingOverlaysLock.Unlock();
++	}
+ }
+ 
+ 
+diff --git a/src/servers/app/drawing/interface/local/AccelerantHWInterface.h b/src/servers/app/drawing/interface/local/AccelerantHWInterface.h
+index 7717b03..db74bbe 100644
+--- a/src/servers/app/drawing/interface/local/AccelerantHWInterface.h
++++ b/src/servers/app/drawing/interface/local/AccelerantHWInterface.h
+@@ -80,6 +80,8 @@ public:
+ 	virtual	void				SetCursor(ServerCursor* cursor);
+ 	virtual	void				SetCursorVisible(bool visible);
+ 	virtual	void				MoveCursorTo(float x, float y);
++	virtual	void				SetDragBitmap(const ServerBitmap* bitmap,
++									const BPoint& offsetFromCursor);
+ 
+ 	// frame buffer access
+ 	virtual	RenderingBuffer*	FrontBuffer() const;
+@@ -110,6 +112,9 @@ private:
+ 			status_t			_SetFallbackMode(display_mode& mode) const;
+ 			void				_SetSystemPalette();
+ 			void				_SetGrayscalePalette();
++			bool				_UpdateHardwareCursor(ServerCursor* cursor);
++			void				_DrawSoftwareCursor();
++			bool				_DragBitmapShown() const;
+ 
+ private:
+ 			int					fCardFD;
+-- 
+2.43.0
+
