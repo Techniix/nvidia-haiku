@@ -18,7 +18,7 @@ It targets GPUs that run NVIDIA's GSP firmware: Turing and newer.
 | --- | --- | --- |
 | Kernel | `nvidia_gsp` | Haiku kernel driver. Hosts NVIDIA's Resource Manager (`nv-kernel.o`), which boots the GPU's GSP firmware and manages memory, channels and interrupts. Publishes `/dev/graphics/nvidia<N>` and `/dev/nvidiactl`. |
 | Kernel | `nvidia_gsp_modeset` | Hosts NVIDIA's NVKMS (`nv-modeset-kernel.o`) for display. Binds only to an `nvidia_gsp` built from the same NVIDIA release. |
-| User | `nvidia_gsp.accelerant` | app_server accelerant: modes and EDID through NVKMS. |
+| User | `nvidia_gsp.accelerant` | app_server accelerant: modes, EDID and the hardware cursor through NVKMS ([docs/hardware-cursor.md](docs/hardware-cursor.md)). |
 | User | Mesa NVK (`mesa-nvk`) | Vulkan driver, with a backend that talks to NVIDIA's RM instead of nouveau. |
 | User | Mesa Zink (`mesa-zink`) | OpenGL on top of Vulkan. |
 | User | `VideoStreamsWsi` | Vulkan window-system integration for Haiku. |
@@ -110,6 +110,7 @@ The firmware search order is user non-packaged, user, system non-packaged, then 
 - `NVK_NVRM_DEBUG=1` makes NVK print the device description it uses: chipset, shader model, GPC/TPC counts, VRAM and BAR1 size.
 - If an application renders garbage, check that it loads this NVK: `VK_LOADER_DEBUG=driver` prints the driver chosen. An older NVK installed system-wide (for example by the `nebula` package, in `/boot/system/add-ons/vulkan/icd.d`) can take precedence; set `VK_DRIVER_FILES` to this build's `nouveau_icd.x86_64.json` to use it alone.
 - With the event-sync NVK, stuck waits report themselves on stderr (`nvk/nvrm: ...`), and `NVK_NVRM_TRACE=<file>` logs every RM call to disk. See [docs/event-sync.md](docs/event-sync.md#debugging-aids).
+- The mouse pointer is a hardware cursor. If it misbehaves, put `hardware_cursor false` in `~/config/settings/kernel/drivers/nvidia_gsp` and restart app_server to get the software cursor back; see [docs/hardware-cursor.md](docs/hardware-cursor.md#turning-it-off).
 - Boot-menu *Debug options* can save the previous session's syslog to `/var/log/previous_syslog`, or to a file on another volume when Haiku doesn't boot.
 
 ## Status

@@ -1,5 +1,7 @@
 #include <Accelerant.h>
+#include <driver_settings.h>
 
+#include <string.h>
 #include <vector>
 
 #include <ErrorUtils.h>
@@ -95,6 +97,19 @@ static NvKmsMode ToNvKmsMode(const display_mode &haikuMode) {
 }
 
 
+static NvKmsCompositionParams CursorCompParams()
+{
+	// app_server's cursor bitmaps are B_RGBA32 that its software cursor
+	// blends as premultiplied (HWInterface::_DrawCursor), so blend the same
+	// way here and the two look identical.
+	NvKmsCompositionParams params {};
+	params.colorKeySelect = NVKMS_COMPOSITION_COLOR_KEY_SELECT_DISABLE;
+	params.blendingMode[0] = NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA;
+	params.blendingMode[1] = NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA;
+	return params;
+}
+
+
 class NvAccelerant {
 private:
 	static NvAccelerant *sInstance;
@@ -113,12 +128,26 @@ private:
 	NvKmsDpyAttributeDpmsValue fDpmsState = NV_KMS_DPY_ATTRIBUTE_DPMS_ON;
 	NvKmsBitmap fOldFramebuffer, fFramebuffer;
 
-	NvKmsBitmap fCursor, fNewCursor;
+	// Hardware cursor. fCursor is the image app_server last gave us; NVKMS
+	// shows it only while fCursorVisible is set. fCursorPos is where
+	// app_server puts the hot spot; NVKMS takes the top-left corner.
+	// fRetiredCursor is the image fCursor replaced, kept until the next
+	// change: freeing a surface makes NVKMS wait for the display channels to
+	// go idle, which right after switching images means waiting for that
+	// switch to reach the screen (up to a frame) with app_server's lock held.
+	NvKmsBitmap fCursor, fRetiredCursor;
 	struct {
 		int32 x;
 		int32 y;
-	} fCursorPos, fCursorHotSpot {};
+	} fCursorPos {}, fCursorHotSpot {};
 	bool fCursorVisible = false;
+	// NVKMS refused the image for the current state in a call that can't
+	// report errors (show_cursor, or restoring the cursor after a modeset).
+	// app_server then believes a cursor is on screen that isn't, so retry
+	// from move_cursor: on the next move, then once per kCursorRetryMoves.
+	bool fCursorImageStale = false;
+	uint32 fCursorRetryCountdown = 0;
+	static const uint32 kCursorRetryMoves = 64;
 
 	// GPU presentation (headers/GpuPresent.h), created on first request.
 	std::unique_ptr<NvPresent> fPresent;
@@ -129,7 +158,12 @@ private:
 	NVDpyId FindConnectedDisplay(NVDpyIdList validDpys);
 	bool ValidateMode(const NvKmsMode &mode);
 
-	void UpdateCursor(bool updateImage, bool updatePos);
+	NvKmsSurfaceHandle ShownCursorSurface() const;
+	NvKmsMoveCursorCommonParams CursorOrigin() const;
+	void ApplyCursorImage(NvKmsSurfaceHandle surface);
+	void ApplyCursorPosition();
+	void MarkCursorImageStale();
+	void SetMode(const display_mode &mode, const NvKmsBitmap &framebuffer, bool withCursor);
 
 public:
 	static NvAccelerant *Instance() {return sInstance;}
@@ -425,6 +459,45 @@ status_t NvAccelerant::ProposeMode(display_mode *target, display_mode *low, disp
 	return IsDisplayModeWithinBounds(*target, *low, *high) ? B_OK : B_BAD_VALUE;
 }
 
+void NvAccelerant::SetMode(const display_mode &mode, const NvKmsBitmap &framebuffer, bool withCursor)
+{
+	NvKmsSetModeParams params {};
+	params.request.deviceHandle = fKmsDev.Get();
+	params.request.commit = true;
+	params.request.requestedDispsBitMask |= 1U << 0;
+	params.request.disp[0].requestedHeadsBitMask |= 1U << 0;
+	params.request.disp[0].head[0].dpyIdList = nvAddDpyIdToEmptyDpyIdList(fDpyId);
+	params.request.disp[0].head[0].mode = ToNvKmsMode(mode);
+	params.request.disp[0].head[0].modeValidationParams.overrides = NVKMS_MODE_VALIDATION_NO_RRX1K_CHECK;
+	params.request.disp[0].head[0].viewPortOut = {.x = 0, .y = 0, .width = mode.timing.h_display, .height = mode.timing.v_display};
+	params.request.disp[0].head[0].viewPortSizeIn = {.width = mode.timing.h_display, .height = mode.timing.v_display};
+	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].surface.handle[0] = framebuffer.Surface().Get();
+	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].surface.specified = true;
+	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeIn.val = {.width = framebuffer.Width(), .height = framebuffer.Height()};
+	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeIn.specified = true;
+	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeOut.val = {.width = framebuffer.Width(), .height = framebuffer.Height()};
+	params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeOut.specified = true;
+	if (withCursor) {
+		// A modeset clears the cursor (nvClearFlipEvoHwState), so carry it
+		// over in the same request.
+		params.request.disp[0].head[0].flip.cursor.image.surfaceHandle[NVKMS_LEFT] = ShownCursorSurface();
+		params.request.disp[0].head[0].flip.cursor.image.cursorCompParams = CursorCompParams();
+		params.request.disp[0].head[0].flip.cursor.imageSpecified = true;
+		params.request.disp[0].head[0].flip.cursor.position = CursorOrigin();
+		params.request.disp[0].head[0].flip.cursor.positionSpecified = true;
+	}
+
+	try {
+		CheckErrno(fKms.Control(NVKMS_IOCTL_SET_MODE, &params, sizeof(params)));
+	} catch (const std::system_error&) {
+		debug_printf("[!] NvAccelerant: SetMode failed\n");
+		debug_printf("  status: %d\n", params.reply.status);
+		debug_printf("  disp[0].status: %d\n", params.reply.disp[0].status);
+		debug_printf("  disp[0].head[0].status: %d\n", params.reply.disp[0].head[0].status);
+		throw;
+	}
+}
+
 void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 {
 	debug_printf("NvAccelerant::SetDisplayMode\n");
@@ -458,33 +531,25 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 
 	NvKmsBitmap newFramebuffer(fRmDev, fKmsDev, modeToSet->virtual_width, modeToSet->virtual_height, (color_space)modeToSet->space);
 
-	{
-		NvKmsSetModeParams params {};
-		params.request.deviceHandle = fKmsDev.Get();
-		params.request.commit = true;
-		params.request.requestedDispsBitMask |= 1U << 0;
-		params.request.disp[0].requestedHeadsBitMask |= 1U << 0;
-		params.request.disp[0].head[0].dpyIdList = nvAddDpyIdToEmptyDpyIdList(fDpyId);
-		params.request.disp[0].head[0].mode = ToNvKmsMode(*modeToSet);
-		params.request.disp[0].head[0].modeValidationParams.overrides = NVKMS_MODE_VALIDATION_NO_RRX1K_CHECK;
-		params.request.disp[0].head[0].viewPortOut = {.x = 0, .y = 0, .width = modeToSet->timing.h_display, .height = modeToSet->timing.v_display};
-		params.request.disp[0].head[0].viewPortSizeIn = {.width = modeToSet->timing.h_display, .height = modeToSet->timing.v_display};
-		params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].surface.handle[0] = newFramebuffer.Surface().Get();
-		params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].surface.specified = true;
-		params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeIn.val = {.width = newFramebuffer.Width(), .height = newFramebuffer.Height()};
-		params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeIn.specified = true;
-		params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeOut.val = {.width = newFramebuffer.Width(), .height = newFramebuffer.Height()};
-		params.request.disp[0].head[0].flip.layer[NVKMS_MAIN_LAYER].sizeOut.specified = true;
-
+	if (ShownCursorSurface() != 0) {
 		try {
-			CheckErrno(fKms.Control(NVKMS_IOCTL_SET_MODE, &params, sizeof(params)));
+			SetMode(*modeToSet, newFramebuffer, true);
+			fCursorImageStale = false;
 		} catch (const std::system_error&) {
-			debug_printf("[!] NvAccelerant: SetMode failed\n");
-			debug_printf("  status: %d\n", params.reply.status);
-			debug_printf("  disp[0].status: %d\n", params.reply.disp[0].status);
-			debug_printf("  disp[0].head[0].status: %d\n", params.reply.disp[0].head[0].status);
-			throw;
+			// Don't let the cursor cost us the mode: retry without it, then
+			// put it back the usual way.
+			debug_printf("[!] NvAccelerant: SetMode with cursor failed, retrying without\n");
+			SetMode(*modeToSet, newFramebuffer, false);
+			try {
+				ApplyCursorImage(ShownCursorSurface());
+				ApplyCursorPosition();
+			} catch (const std::system_error &ex) {
+				debug_printf("[!] nvidia_gsp: restoring the cursor after a modeset: %s\n", ex.what());
+				MarkCursorImageStale();
+			}
 		}
+	} else {
+		SetMode(*modeToSet, newFramebuffer, false);
 	}
 	fCurrentMode = ToNvKmsMode(*modeToSet);
 
@@ -640,62 +705,81 @@ void NvAccelerant::GetEdidInfo(void* info, uint32 size, uint32* _version)
 }
 
 
+NvKmsSurfaceHandle NvAccelerant::ShownCursorSurface() const
+{
+	return (fCursorVisible && fCursor.IsSet()) ? fCursor.Surface().Get() : 0;
+}
+
+NvKmsMoveCursorCommonParams NvAccelerant::CursorOrigin() const
+{
+	return {
+		.x = (NvS16)(fCursorPos.x - fCursorHotSpot.x),
+		.y = (NvS16)(fCursorPos.y - fCursorHotSpot.y),
+	};
+}
+
+void NvAccelerant::ApplyCursorImage(NvKmsSurfaceHandle surface)
+{
+	NvKmsSetCursorImageParams params {};
+	params.request.deviceHandle = fKmsDev.Get();
+	params.request.dispHandle = fDisp;
+	params.request.head = fHead;
+	params.request.common.surfaceHandle[NVKMS_LEFT] = surface;
+	params.request.common.cursorCompParams = CursorCompParams();
+	CheckErrno(fKms.Control(NVKMS_IOCTL_SET_CURSOR_IMAGE, &params, sizeof(params)));
+}
+
+void NvAccelerant::ApplyCursorPosition()
+{
+	NvKmsMoveCursorParams params {};
+	params.request.deviceHandle = fKmsDev.Get();
+	params.request.dispHandle = fDisp;
+	params.request.head = fHead;
+	params.request.common = CursorOrigin();
+	CheckErrno(fKms.Control(NVKMS_IOCTL_MOVE_CURSOR, &params, sizeof(params)));
+}
+
+void NvAccelerant::MarkCursorImageStale()
+{
+	fCursorImageStale = true;
+	fCursorRetryCountdown = 0;
+}
+
 void NvAccelerant::MoveCursor(uint16 x, uint16 y)
 {
 	fCursorPos.x = x;
 	fCursorPos.y = y;
-	UpdateCursor(false, true);
+	ApplyCursorPosition();
+
+	if (fCursorImageStale) {
+		if (fCursorRetryCountdown > 0) {
+			fCursorRetryCountdown--;
+			return;
+		}
+		fCursorRetryCountdown = kCursorRetryMoves;
+		ApplyCursorImage(ShownCursorSurface());
+		fCursorImageStale = false;
+	}
 }
 
 void NvAccelerant::ShowCursor(bool isVisible)
 {
-	if (fCursorVisible == isVisible) {
+	if (fCursorVisible == isVisible && !fCursorImageStale) {
 		return;
 	}
-	fCursorVisible = !fCursorVisible;
-	UpdateCursor(true, false);
-}
-
-void NvAccelerant::UpdateCursor(bool updateImage, bool updatePos)
-{
-	if (updateImage) {
-		NvKmsSetCursorImageParams params {
-			.request = {
-				.deviceHandle = fKmsDev.Get(),
-				.dispHandle = fDisp,
-				.head = fHead,
-				.common = {
-					.surfaceHandle = {
-						fCursorVisible ? (fNewCursor.IsSet() ? fNewCursor.Surface().Get() : fCursor.Surface().Get()) : 0,
-					},
-					.cursorCompParams = {
-						.blendingMode = {
-							NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA,
-							NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA,
-						}
-					},
-				},
-			},
-		};
-		CheckErrno(fKms.Control(NVKMS_IOCTL_SET_CURSOR_IMAGE, &params, sizeof(params)));
-		if (fNewCursor.IsSet()) {
-			fCursor = std::move(fNewCursor);
-		}
+	// Record what app_server wants even if NVKMS refuses it now: modesets
+	// and the retry in MoveCursor go by fCursorVisible.
+	fCursorVisible = isVisible;
+	try {
+		ApplyCursorImage(ShownCursorSurface());
+	} catch (...) {
+		MarkCursorImageStale();
+		throw;
 	}
-
-	if (updatePos) {
-		NvKmsMoveCursorParams params {
-			.request = {
-				.deviceHandle = fKmsDev.Get(),
-				.dispHandle = fDisp,
-				.head = fHead,
-				.common = {
-					.x = (NvS16)(fCursorPos.x - fCursorHotSpot.x),
-					.y = (NvS16)(fCursorPos.y - fCursorHotSpot.y),
-				},
-			},
-		};
-		CheckErrno(fKms.Control(NVKMS_IOCTL_MOVE_CURSOR, &params, sizeof(params)));
+	fCursorImageStale = false;
+	if (isVisible) {
+		// The hot spot may have changed while the cursor was hidden.
+		ApplyCursorPosition();
 	}
 }
 
@@ -706,40 +790,57 @@ void NvAccelerant::SetCursorShape(uint16 width, uint16 height, uint16 hotX, uint
 
 void NvAccelerant::SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uint16 hotY, color_space colorSpace, uint16 bytesPerRow, const uint8* bitmapData)
 {
-	int32 cursorWidth;
-	int32 cursorHeight;
-	if (width > 256 || height > 256) {
+	// Anything refused here makes app_server fall back to its software
+	// cursor, so refuse rather than show something wrong. app_server's
+	// cursors are B_RGBA32; that maps directly to NVKMS's A8R8G8B8, the
+	// only cursor format the display engine takes.
+	if (colorSpace != B_RGBA32 || bitmapData == NULL || width == 0 || height == 0
+		|| bytesPerRow < 4 * (uint32)width) {
 		RaiseErrno(EINVAL);
-	} else if (width > 128 || height > 128) {
-		cursorWidth = 256;
-		cursorHeight = 256;
-	} else if (width > 64 || height > 64) {
-		cursorWidth = 128;
-		cursorHeight = 128;
-	} else if (width > 32 || height > 32) {
-		cursorWidth = 64;
-		cursorHeight = 64;
-	} else {
-		cursorWidth = 32;
-		cursorHeight = 32;
 	}
 
-	NvKmsBitmap newCursor(fRmDev, fKmsDev, cursorWidth, cursorHeight, colorSpace);
+	// The cursor must be square, 32, 64, 128 or 256 pixels. The display
+	// engine has no cursor pitch, so rows must be packed, and NvKmsBitmap
+	// pads rows to 256 bytes: start at 64 (256 bytes per row).
+	const uint32 maxSize = fKmsDev.Info().maxCursorSize;
+	uint32 cursorSize = 64;
+	while (cursorSize < width || cursorSize < height) {
+		cursorSize *= 2;
+	}
+	if (cursorSize > maxSize || cursorSize > 256) {
+		RaiseErrno(EINVAL);
+	}
+
+	NvKmsBitmap newCursor(fRmDev, fKmsDev, cursorSize, cursorSize, B_RGBA32);
+	if ((uint32)newCursor.BytesPerRow() != 4 * cursorSize) {
+		RaiseErrno(EINVAL);
+	}
 	memset(newCursor.Bits(), 0, newCursor.BitsLength());
 	auto dstLine = (uint8*)newCursor.Bits();
 	auto srcLine = bitmapData;
-	for (int32 y = 0; y < height; y++) {
-		memcpy(dstLine, srcLine, 4*width /* FIXME */);
+	for (uint32 y = 0; y < height; y++) {
+		memcpy(dstLine, srcLine, 4 * (size_t)width);
 		dstLine += newCursor.BytesPerRow();
 		srcLine += bytesPerRow;
 	}
 
-	fNewCursor = std::move(newCursor);
+	// Free the image retired by the previous change before submitting a new
+	// one: the display has long stopped using it, so NVKMS's idle wait on
+	// unregistering returns at once.
+	fRetiredCursor = NvKmsBitmap();
+
+	// Switch the display over first: if NVKMS refuses the image, the
+	// current cursor stays as it was and newCursor is freed on return.
+	if (fCursorVisible) {
+		ApplyCursorImage(newCursor.Surface().Get());
+		fCursorImageStale = false;
+	}
+	fRetiredCursor = std::move(fCursor);
+	fCursor = std::move(newCursor);
 	fCursorHotSpot.x = hotX;
 	fCursorHotSpot.y = hotY;
-
 	if (fCursorVisible) {
-		UpdateCursor(true, true);
+		ApplyCursorPosition();
 	}
 }
 
@@ -784,6 +885,74 @@ NvHandle NvAccelerant::ScanoutMemory(NvU32 head, gpu_buffer_desc *desc)
 }
 
 
+// Optional timing of the cursor hooks, for checking that they never stall
+// app_server (which holds its exclusive drawing lock across them). Enable
+// with "cursor_timing true" in the settings file below; the syslog then gets
+// a line per 4096 moves and per 64 other calls.
+struct CursorTiming {
+	const char *name;
+	uint32 reportEvery;
+	uint32 count = 0;
+	bigtime_t total = 0;
+	bigtime_t max = 0;
+
+	void Add(bigtime_t t)
+	{
+		count++;
+		total += t;
+		if (t > max)
+			max = t;
+		if (count == reportEvery) {
+			debug_printf("nvidia_gsp: %s: %" B_PRIu32 " calls, average %" B_PRIdBIGTIME
+				" us, max %" B_PRIdBIGTIME " us\n", name, count, total / count, max);
+			count = 0;
+			total = 0;
+			max = 0;
+		}
+	}
+};
+
+static bool sCursorTiming = false;
+static CursorTiming sMoveTiming {"move_cursor", 4096};
+static CursorTiming sShowTiming {"show_cursor", 64};
+static CursorTiming sBitmapTiming {"set_cursor_bitmap", 64};
+
+class CursorTimer {
+	CursorTiming &fTiming;
+	bigtime_t fStart;
+public:
+	CursorTimer(CursorTiming &timing): fTiming(timing), fStart(sCursorTiming ? system_time() : 0) {}
+	~CursorTimer() { if (sCursorTiming) fTiming.Add(system_time() - fStart); }
+};
+
+// move_cursor and show_cursor can't report errors and run on every mouse
+// move: log the first failure and then one line per 1024.
+static void LogCursorError(const char *hook, const char *what)
+{
+	static uint32 sErrors = 0;
+	if (sErrors++ % 1024 == 0) {
+		debug_printf("[!] nvidia_gsp: %s: %s (%" B_PRIu32 " cursor errors so far)\n", hook, what, sErrors);
+	}
+}
+
+static bool HardwareCursorEnabled()
+{
+	// Opt-out, in ~/config/settings/kernel/drivers/nvidia_gsp:
+	//   hardware_cursor false
+	// Without the file or the line the hardware cursor is used.
+	static int8 sEnabled = -1;
+	if (sEnabled < 0) {
+		void *handle = load_driver_settings("nvidia_gsp");
+		sEnabled = get_driver_boolean_parameter(handle, "hardware_cursor", true, true) ? 1 : 0;
+		sCursorTiming = get_driver_boolean_parameter(handle, "cursor_timing", false, true);
+		unload_driver_settings(handle);
+		debug_printf("nvidia_gsp: hardware cursor %s%s\n", sEnabled ? "enabled" : "disabled by settings",
+			sEnabled && sCursorTiming ? ", timing on" : "");
+	}
+	return sEnabled != 0;
+}
+
+
 _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 {
 	switch (feature) {
@@ -795,6 +964,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -819,6 +991,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -841,6 +1016,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -865,6 +1043,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -876,6 +1057,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -888,6 +1072,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -900,6 +1087,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -912,6 +1102,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -924,6 +1117,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -959,6 +1155,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -971,6 +1170,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -984,6 +1186,9 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
@@ -997,23 +1202,34 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
 		}
 
-#if 0
 		case B_MOVE_CURSOR: {
+			if (!HardwareCursorEnabled()) {
+				return nullptr;
+			}
 			move_cursor fn = [](uint16 x, uint16 y) {
+				CursorTimer timer(sMoveTiming);
 				try {
 					NvAccelerant::Instance()->MoveCursor(x, y);
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					LogCursorError("move_cursor", ex.what());
+				} catch (...) {
+					LogCursorError("move_cursor", "unexpected exception");
 				}
 			};
 			return (void*)fn;
 		}
 #if 0
+		// Monochrome cursors: not implemented. app_server only uses this when
+		// B_SET_CURSOR_BITMAP refuses a cursor, and then falls back to its
+		// software cursor anyway.
 		case B_SET_CURSOR_SHAPE: {
 			set_cursor_shape fn = [](uint16 width, uint16 height, uint16 hotX, uint16 hotY, const uint8* andMask, const uint8* xorMask) {
 				try {
@@ -1022,34 +1238,49 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					debug_printf("[!] nvidia_gsp: unexpected exception\n");
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
 		}
 #endif
 		case B_SHOW_CURSOR: {
+			if (!HardwareCursorEnabled()) {
+				return nullptr;
+			}
 			show_cursor fn = [](bool isVisible) {
+				CursorTimer timer(sShowTiming);
 				try {
 					NvAccelerant::Instance()->ShowCursor(isVisible);
 				} catch (const std::system_error &ex) {
-					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
+					LogCursorError("show_cursor", ex.what());
+				} catch (...) {
+					LogCursorError("show_cursor", "unexpected exception");
 				}
 			};
 			return (void*)fn;
 		}
 		case B_SET_CURSOR_BITMAP: {
+			if (!HardwareCursorEnabled()) {
+				return nullptr;
+			}
 			set_cursor_bitmap fn = [](uint16 width, uint16 height, uint16 hotX, uint16 hotY, color_space colorSpace, uint16 bytesPerRow, const uint8* bitmapData) {
+				CursorTimer timer(sBitmapTiming);
 				try {
 					NvAccelerant::Instance()->SetCursorBitmap(width, height, hotX, hotY, colorSpace, bytesPerRow, bitmapData);
 					return B_OK;
 				} catch (const std::system_error &ex) {
 					debug_printf("[!] nvidia_gsp: %s\n", ex.what());
 					return ToErrorCode(ex);
+				} catch (...) {
+					// e.g. std::bad_alloc; never let it unwind into app_server
+					return (status_t)B_ERROR;
 				}
 			};
 			return (void*)fn;
 		}
-#endif
 
 		// Renga GPU presentation (provisional, docs/RENGA-REQUESTS.md R-1).
 		// Not a function pointer like the hooks above: the table itself.
