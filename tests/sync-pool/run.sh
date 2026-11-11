@@ -1,6 +1,6 @@
 #!/bin/sh
-# Build and run the sync-pool host test against the patched mesa-nvk tree.
-# Run Build.sh first (it applies tools/patches/mesa-nvk to mesa-nvk/).
+# Build and run the sync-pool host test against the mesa-nvk submodule
+# (git submodule update --init mesa-nvk), or the tree in $MESA_NVK.
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 base="$(dirname "$(dirname "$here")")"
@@ -8,7 +8,7 @@ mesa="${MESA_NVK:-$base/mesa-nvk}"
 [ -d "$mesa/src/nouveau" ] || mesa="$base/source/mesa-nvk"
 nvrm="$mesa/src/nouveau/vulkan/nvkmd/nvrm"
 [ -f "$nvrm/nvkmd_nvrm_retire.h" ] || {
-	echo "nvkmd_nvrm_retire.h not found in $nvrm: run Build.sh first (patch 0008)." >&2
+	echo "nvkmd_nvrm_retire.h not found in $nvrm: check out the mesa-nvk submodule or set MESA_NVK." >&2
 	exit 2
 }
 work="$here/build.$(getarch 2>/dev/null || uname -m)"

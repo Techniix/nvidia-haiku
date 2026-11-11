@@ -141,7 +141,9 @@ if [ -n "$(projectDir mesa-nvk)" ] && [ ! -e "$clcDeps/share/pkgconfig/libclc.pc
 	echo "libclc not found: run tools/build-clc-deps.sh first (NVK needs it to build)." >&2
 	exit 1
 fi
-applyPatches mesa-nvk
+# mesa-nvk needs no patch step on this branch: the submodule is the "renga"
+# branch of Techniix/mesa, where the former tools/patches/mesa-nvk series are
+# ordinary commits on top of X547's nvrm-event-sync-r4.
 
 # Newer NVK (X547's event-sync branch) takes the NVIDIA tree and release as
 # options and refuses to start against a kernel driver from another release.
