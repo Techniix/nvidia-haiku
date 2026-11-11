@@ -8,6 +8,8 @@ dep_nvrm_client_cpp = dependency('nvrm-client-cpp')
 dep_nvkms_client_cpp = dependency('nvkms-client-cpp')
 
 dep_be = cpp.find_library('be')
+# eventfd() for presentation events (NvPresent.cpp); Renga's libgnu.
+dep_gnu = cpp.find_library('gnu')
 
 subdir('common')
 
@@ -21,6 +23,7 @@ shared_module('nvidia_gsp',
 		dep_nvrm_client_cpp,
 		dep_nvkms_client_cpp,
 		dep_accelerant_common,
+		dep_gnu,
 	],
 	name_prefix: '',
 	name_suffix: 'accelerant',

@@ -11,11 +11,25 @@
  * NVKMS queue NVKMS_EVENT_TYPE_FLIP_OCCURRED on this client's event queue;
  * the queue is readable on the modeset device's descriptor, which Quasar's
  * kernel side already supports select() on (KmsDevice.cpp).
+ *
+ * Vblank events use NVKMS_IOCTL_NOTIFY_VBLANK, which is one-shot and signals
+ * a separate "unicast event" open of the modeset device; that descriptor
+ * stays readable after it fires. Each request therefore gets its own
+ * descriptor, closed once seen.
+ *
+ * A helper thread waits on the modeset descriptor and the pending vblank
+ * descriptors, turns what it sees into gpu_present_events, and signals one
+ * eventfd (Renga's libgnu). event_fd() returns that eventfd, so app_server
+ * waits on a single descriptor for both kinds of event, in epoll with its
+ * other sources.
  */
 
 #include <map>
 #include <deque>
 #include <mutex>
+#include <thread>
+#include <vector>
+#include <atomic>
 
 #include <NvRmApi.h>
 #include <NvRmDevice.h>
@@ -76,6 +90,10 @@ private:
 	};
 
 	void SetUpNotifiers();
+	void EventThread();
+	void DrainKmsEvents();	// fLock held
+	void Signal();
+	void Wake();
 	uint32 NotifierOffsetInWords(uint32 head, uint32 plane, uint32 index) const;
 	bool NotifierDone(uint32 head, uint32 plane, uint32 index) const;
 	void ResetNotifier(uint32 head, uint32 plane, uint32 index);
@@ -100,4 +118,15 @@ private:
 	enum NvKmsNIsoFormat fNotifierFormat {};
 	bool fHaveNotifiers = false;
 	bool fEventsDeclared = false;
+
+	// Event delivery.
+	int fSignalFd = -1;		// eventfd returned by event_fd()
+	int fWakeFd = -1;		// eventfd that wakes the helper thread
+	struct PendingVblank {
+		int fd;
+		uint32 head;
+	};
+	std::vector<PendingVblank> fPendingVblanks;	// fLock
+	std::thread fThread;
+	std::atomic<bool> fQuit {false};
 };

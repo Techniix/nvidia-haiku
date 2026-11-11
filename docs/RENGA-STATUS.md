@@ -47,7 +47,8 @@ about behaviour.
 | `registry_dwords` driver setting (RM registry values without a rebuild) | Syntax-checked | |
 | NVK: routine notices only with `NVK_NVRM_DEBUG` | Host tests pass | `RM reports SM version`, `deferring reuse of a sync slot` |
 | `tools/renga-test.sh`: build, install, run tests, collect one report archive | Smoke-tested on Linux | Timeout and collection paths only |
-| GPU presentation interface, driver half (R-1) | Syntax-checked | Header compiles as C and C++; see Display |
+| GPU presentation interface, driver half (R-1) | Syntax-checked | Header compiles as C and C++; events on one eventfd; see Display |
+| `nvkms_get_per_open_data()` (second-descriptor NVKMS ioctls) | Syntax-checked | Was `return NULL` |
 
 ## Inherited from `rtx5070-event-sync`
 
@@ -69,7 +70,7 @@ about behaviour.
 | DPMS on/off | Written | Present in the accelerant; not verified |
 | Hardware cursor | Written | Hooks present in the accelerant; not verified on this branch |
 | Page flips with completion events (R-1 driver half) | Syntax-checked | `accelerant/NvPresent.cpp`, `headers/GpuPresent.h`: buffer import from an NVK memory descriptor (linear and block-linear), flips on any layer with position and scaling, completion through NVKMS notifiers and the modeset event queue, scanout export. Not run; app_server does not call it yet |
-| Vblank events | Blocked (Quasar kernel) | `NVKMS_IOCTL_NOTIFY_VBLANK` needs `nvkms_get_per_open_data()`, which returns NULL in `nvkms-haiku.cpp`; `request_vblank` returns `B_NOT_SUPPORTED` until it is implemented |
+| Vblank events | Syntax-checked | `nvkms_get_per_open_data()` implemented (KmsDevice.cpp), so `NVKMS_IOCTL_NOTIFY_VBLANK` and the surface-grant and swap-group ioctls can resolve their second descriptor. `request_vblank` opens a one-shot descriptor per request; a helper thread merges vblank and flip events into one eventfd |
 | Multihead, DisplayPort MST | Not started | app_server side is Renga F-38 |
 | Variable refresh rate | Not started | |
 | HDR | Not started | Stretch goal |

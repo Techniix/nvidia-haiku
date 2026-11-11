@@ -10,8 +10,12 @@
 #include "NvPresent.h"
 
 #include <stdint.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/eventfd.h>
 
 #include <ErrorUtils.h>
 
@@ -20,6 +24,7 @@
 extern "C" {
 #include "nvkms-sync.h"
 }
+#include "nvkms-haiku.h"	// NVIDIA_MODESET_DEVICE_NAME
 
 
 // Slots per layer, slot size and layout, as in NVIDIA's
@@ -68,6 +73,15 @@ NvPresent::NvPresent(const Context &context):
 	params.request.interestMask = 1U << NVKMS_EVENT_TYPE_FLIP_OCCURRED;
 	fEventsDeclared = fContext.kms->Control(NVKMS_IOCTL_DECLARE_EVENT_INTEREST,
 		&params, sizeof(params)) >= 0;
+
+	fSignalFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	fWakeFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	if (fSignalFd < 0 || fWakeFd < 0) {
+		debug_printf("[!] NvPresent: eventfd failed (%s); no event delivery\n",
+			strerror(errno));
+		return;
+	}
+	fThread = std::thread([this] { EventThread(); });
 }
 
 
@@ -75,6 +89,18 @@ NvPresent::~NvPresent()
 {
 	if (sPresent == this)
 		sPresent = nullptr;
+
+	if (fThread.joinable()) {
+		fQuit = true;
+		Wake();
+		fThread.join();
+	}
+	for (const PendingVblank &pending : fPendingVblanks)
+		close(pending.fd);
+	if (fSignalFd >= 0)
+		close(fSignalFd);
+	if (fWakeFd >= 0)
+		close(fWakeFd);
 
 	// Surfaces unregister themselves (NvKmsSurface). Planes showing an
 	// imported buffer are left as they are: the accelerant is going away,
@@ -434,6 +460,8 @@ NvPresent::Flip(uint32 head, uint32 plane, uint32 id,
 			DropBufferUse(state->shown);
 		state->shown = id;
 		state->pending = 0;
+		if (fSignalFd >= 0)
+			Signal();
 	}
 	return B_OK;
 }
@@ -466,38 +494,128 @@ NvPresent::DisablePlane(uint32 head, uint32 plane)
 status_t
 NvPresent::RequestVblank(uint32 head)
 {
-	// NVKMS_IOCTL_NOTIFY_VBLANK signals a "unicast event" descriptor: a
-	// second open of the modeset device that the kernel resolves with
-	// nvkms_get_per_open_data(). Quasar's kernel glue returns NULL there
-	// (nvidia_gsp/nvidia-modeset/nvkms-haiku.cpp), so the ioctl would fail.
-	// Until that is implemented, report it plainly instead of faking vblank
-	// timing. Tracked in docs/RENGA-STATUS.md.
 	if (head >= fContext.headCount)
 		return B_BAD_VALUE;
-	return B_NOT_SUPPORTED;
+	if (!fThread.joinable())
+		return B_NO_INIT;
+
+	// A fresh open of the modeset device, used only as the event's target.
+	// It must be opened by this team: the kernel resolves it in the caller's
+	// descriptor table (nvkms_get_per_open_data, KmsDevice.cpp).
+	int fd = open("/dev/" NVIDIA_MODESET_DEVICE_NAME, O_RDWR | O_CLOEXEC);
+	if (fd < 0)
+		return errno;
+
+	NvKmsNotifyVblankParams params {};
+	params.request.deviceHandle = fContext.kmsDev->Get();
+	params.request.dispHandle = fContext.disp;
+	params.request.head = head;
+	params.request.unicastEvent.fd = fd;
+	if (fContext.kms->Control(NVKMS_IOCTL_NOTIFY_VBLANK, &params,
+			sizeof(params)) < 0) {
+		close(fd);
+		return B_ERROR;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(fLock);
+		fPendingVblanks.push_back({fd, head});
+	}
+	Wake();
+	return B_OK;
 }
 
 
 int32
 NvPresent::EventFd()
 {
-	return fContext.kms->Fd();
+	return fSignalFd;
 }
 
 
-status_t
-NvPresent::NextEvent(gpu_present_event *event)
+void
+NvPresent::Signal()
 {
-	if (event == nullptr)
-		return B_BAD_VALUE;
+	eventfd_write(fSignalFd, 1);
+}
 
-	std::lock_guard<std::mutex> lock(fLock);
 
-	// Drain NVKMS's queue. A FLIP_OCCURRED event says that some flip on
-	// (head, layer) with "awaken" completed; the notifier of the pending
-	// flip says whether it was ours. Other event types (display hot-plug,
-	// attributes) are not this interface's business and are dropped here;
-	// the accelerant does not otherwise read this queue.
+void
+NvPresent::Wake()
+{
+	if (fWakeFd >= 0)
+		eventfd_write(fWakeFd, 1);
+}
+
+
+// Waits on the modeset descriptor, the wake eventfd and every pending vblank
+// descriptor; moves what arrives into fEvents and signals fSignalFd.
+void
+NvPresent::EventThread()
+{
+	std::vector<pollfd> fds;
+	std::vector<PendingVblank> pending;
+	while (!fQuit) {
+		{
+			std::lock_guard<std::mutex> lock(fLock);
+			pending = fPendingVblanks;
+		}
+		fds.clear();
+		fds.push_back({fContext.kms->Fd(), POLLIN, 0});
+		fds.push_back({fWakeFd, POLLIN, 0});
+		for (const PendingVblank &it : pending)
+			fds.push_back({it.fd, POLLIN, 0});
+
+		if (poll(fds.data(), fds.size(), -1) < 0) {
+			if (errno == EINTR)
+				continue;
+			debug_printf("[!] NvPresent: poll failed (%s)\n", strerror(errno));
+			return;
+		}
+
+		if ((fds[1].revents & POLLIN) != 0) {
+			eventfd_t value;
+			eventfd_read(fWakeFd, &value);
+		}
+
+		bool signal = false;
+		std::lock_guard<std::mutex> lock(fLock);
+		if ((fds[0].revents & POLLIN) != 0) {
+			size_t before = fEvents.size();
+			DrainKmsEvents();
+			signal |= fEvents.size() != before;
+		}
+		for (size_t i = 0; i < pending.size(); i++) {
+			if ((fds[i + 2].revents & (POLLIN | POLLERR | POLLHUP)) == 0)
+				continue;
+			gpu_present_event event {};
+			event.type = B_GPU_EVENT_VBLANK;
+			event.head = pending[i].head;
+			event.time = system_time();
+			fEvents.push_back(event);
+			signal = true;
+			close(pending[i].fd);
+			for (auto it = fPendingVblanks.begin(); it != fPendingVblanks.end(); ++it) {
+				if (it->fd == pending[i].fd) {
+					fPendingVblanks.erase(it);
+					break;
+				}
+			}
+		}
+		if (signal)
+			Signal();
+	}
+}
+
+
+// Move NVKMS's queued events into fEvents. A FLIP_OCCURRED event says that
+// some flip on (head, layer) with "awaken" completed; the notifier of the
+// pending flip says whether it was ours. Other event types (display hot-plug,
+// attributes) are not this interface's business and are dropped; the
+// accelerant does not otherwise read this queue.
+void
+NvPresent::DrainKmsEvents()
+{
 	for (;;) {
 		NvKmsGetNextEventParams params {};
 		if (fContext.kms->Control(NVKMS_IOCTL_GET_NEXT_EVENT, &params,
@@ -529,9 +647,24 @@ NvPresent::NextEvent(gpu_present_event *event)
 		state->shown = state->pending;
 		state->pending = 0;
 	}
+}
 
-	if (fEvents.empty())
+
+status_t
+NvPresent::NextEvent(gpu_present_event *event)
+{
+	if (event == nullptr)
+		return B_BAD_VALUE;
+
+	std::lock_guard<std::mutex> lock(fLock);
+	if (fEvents.empty()) {
+		// Clear the eventfd only when the queue is empty, under the lock the
+		// helper pushes under, so a signal is never lost: anything pushed
+		// after this point signals again.
+		eventfd_t value;
+		eventfd_read(fSignalFd, &value);
 		return B_WOULD_BLOCK;
+	}
 	*event = fEvents.front();
 	fEvents.pop_front();
 	return B_OK;

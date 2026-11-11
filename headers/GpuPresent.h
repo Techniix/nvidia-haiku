@@ -121,6 +121,8 @@ typedef struct {
 					const gpu_flip_params* params);
 	status_t	(*disable_plane)(uint32 head, uint32 plane);
 
+	/* One B_GPU_EVENT_VBLANK at the next vblank of the head. Call again for
+	 * the following one. */
 	status_t	(*request_vblank)(uint32 head);
 
 	/* Readable while events are queued: select(), poll() and epoll. */
