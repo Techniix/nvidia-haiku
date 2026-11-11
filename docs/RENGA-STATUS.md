@@ -16,6 +16,38 @@ Nothing on this branch has been built for Renga or run on the RTX 5070 yet.
 The "Tested" entries below are inherited results on stock Haiku hrev60368,
 recorded in `docs/event-sync.md`.
 
+"Syntax-checked" below means `tools/crosscheck/run.sh`: clang compiles the
+kernel driver, the SDK wrappers and the accelerant with `-fsyntax-only`
+against Renga's kernel headers and NVIDIA's headers. It finds wrong types and
+signatures; it does not find link errors or GCC-only errors, and says nothing
+about behaviour.
+
+## Decisions
+
+- **Native driver, no LinuxKPI (2026-11-11).** NVIDIA's kernel code is ported
+  by supplying its OS interface, and `nvidia_gsp/nvidia/os-haiku*.cpp` does
+  that directly on the Haiku/Renga kernel. That interface changes little
+  between NVIDIA releases (570.86.16 and 570.133.07 have the same prototypes),
+  so running NVIDIA's Linux glue on LinuxKPI would save little on updates,
+  while LinuxKPI's DMA path bounces through a per-device pool and its coverage
+  follows one Wi-Fi driver. Quasar stays native; where the kernel lacks
+  something, it is requested in `RENGA-REQUESTS.md`.
+- **Mesa on a branch, not patch files (2026-11-11).** `mesa-nvk` is the
+  `renga` branch of `Techniix/mesa`: X547's `nvrm-event-sync-r4` at `643b3df`
+  with the former `tools/patches/mesa-nvk` series as commits.
+
+## Changed on this branch
+
+| Change | State | Notes |
+| --- | --- | --- |
+| RM assertion failures no longer panic the kernel (`os_dump_stack`) | Syntax-checked | Was a `panic()` stub reached from `osAssertFailed()` on every failed `NV_ASSERT` |
+| `os_dma_buf_enabled`, `nvidia_caps_root`, `nv_parms` are data, as RM expects | Syntax-checked | Were function stubs, so RM read machine code as their values |
+| 68 OS-interface stubs implemented, made no-ops as on Linux x86, or turned into logged refusals | Syntax-checked | `os-haiku-misc.cpp`; 130 panic stubs remain, 111 of them NVLink/NVSwitch/IBM NPU/SPDM |
+| RM log level: warnings and errors by default, `verbose true` in the driver settings file for everything | Syntax-checked | `nv_printf()` printed every level before |
+| `registry_dwords` driver setting (RM registry values without a rebuild) | Syntax-checked | |
+| NVK: routine notices only with `NVK_NVRM_DEBUG` | Host tests pass | `RM reports SM version`, `deferring reuse of a sync slot` |
+| `tools/renga-test.sh`: build, install, run tests, collect one report archive | Smoke-tested on Linux | Timeout and collection paths only |
+
 ## Inherited from `rtx5070-event-sync`
 
 | Area | State | Notes |
@@ -46,8 +78,8 @@ recorded in `docs/event-sync.md`.
 | Area | State | Notes |
 | --- | --- | --- |
 | Renga WSI (zero-copy) | Blocked | Accelerant extension, R-1 |
-| `VK_EXT_external_memory_host` | Blocked | `os_lock_user_pages()` is a panic stub; NVK patch 0005 hides the extension |
-| External memory/semaphore sharing between processes | Not started | dma-buf import paths are panic stubs |
+| `VK_EXT_external_memory_host` | Blocked | Needs long-term pinning of user pages (`RENGA-REQUESTS.md`, R-5); `os_lock_user_pages()` refuses cleanly and NVK does not offer the extension |
+| External memory/semaphore sharing between processes | Written (inherited) | NVK shares through RM's export-object-to-fd on an `nvidiactl` descriptor, not dma-buf; needs a test with two processes passing the descriptor |
 | `VK_EXT_memory_budget` | Not started | |
 | Extension coverage for Eglantine | Not started | Needs `vulkaninfo` from the card |
 | Futex-based waits in Mesa | Blocked | Renga F-49 |
@@ -65,20 +97,19 @@ recorded in `docs/event-sync.md`.
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Clock and power management through GSP | Not started | Power-management OS-interface paths are panic stubs |
+| Clock and power management through GSP | Not started | The OS interface now reports "no runtime power management" as Linux without CONFIG_PM does; the idle state machine's mmap-revocation hooks are still panic stubs on purpose |
 | Temperature, fan, clocks, utilisation, VRAM reporting | Not started | |
 | Suspend/resume hooks | Not started | Renga F-37 |
 | Recovery from channel and GPU faults | Not started | NVK 0009 turns an RC error into `VK_ERROR_DEVICE_LOST` during CPU waits |
-| Quiet logging by default | Not started | |
-| Remaining panic stubs (`nvidia_gsp/nvidia/stubs.c`) | Open | About 80 OS-interface functions |
+| Quiet logging by default | Syntax-checked (kernel), host-tested (NVK) | VideoStreamsWsi's messages are still unconditional |
+| Remaining panic stubs (`nvidia_gsp/nvidia/stubs.c`) | Reduced | 19 outside NVLink/NVSwitch/IBM NPU/SPDM: scatter-gather and peer DMA, page refcounts, IMEX channels, mmap revocation, PCI recovery |
 
 ## Renga integration
 
 | Area | State | Notes |
 | --- | --- | --- |
 | Build and run unchanged on Renga | Not started | First hardware step |
-| Mesa on a `renga` branch of `Techniix/mesa` (replacing `tools/patches/mesa-nvk`) | Not started | |
-| LinuxKPI helpers in `nvidia_gsp` | Not started | Audit first |
+| Mesa on a `renga` branch of `Techniix/mesa` (replacing `tools/patches/mesa-nvk`) | Done | Host tests pass against it; not built for Renga |
 | `eventfd`/`memfd_create`/`epoll` paths in NVK and the SDKs | Not started | |
 | Game mode hook | Blocked | Renga F-50 |
 | Graphics settings panel | Not started | |

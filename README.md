@@ -6,6 +6,8 @@
 > Prebuilt test builds are on the [Releases](https://github.com/Techniix/nvidia-haiku/releases) page.
 > NVK and NVIDIA-tree changes live in [Techniix/mesa](https://github.com/Techniix/mesa) (`rtx5070-dev`) and [Techniix/open-gpu-kernel-modules](https://github.com/Techniix/open-gpu-kernel-modules) (`570.133.07-haiku`).
 
+> **Branch `renga`** targets Renga (`Techniix/haiku`, `ce/main`) only and may not build or run on stock Haiku. Start with [docs/RENGA-STATUS.md](docs/RENGA-STATUS.md) (what is tested, built or only written), [docs/RENGA-REQUESTS.md](docs/RENGA-REQUESTS.md) (what the driver needs from Renga) and [docs/APP-INTEGRATION.md](docs/APP-INTEGRATION.md). On this branch `mesa-nvk` is the `renga` branch of [Techniix/mesa](https://github.com/Techniix/mesa), with no patch step. A test session on the hardware is `tools/renga-test.sh build`, a reboot, then `tools/renga-test.sh run`.
+
 A hardware-accelerated graphics driver for NVIDIA GPUs on [Haiku](https://www.haiku-os.org), built on NVIDIA's [open GPU kernel modules](https://github.com/NVIDIA/open-gpu-kernel-modules). It provides modesetting, Vulkan through Mesa's NVK, and OpenGL through Zink.
 
 It targets GPUs that run NVIDIA's GSP firmware: Turing and newer.
