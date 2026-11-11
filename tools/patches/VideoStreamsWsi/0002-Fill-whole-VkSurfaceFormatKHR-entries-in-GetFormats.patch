@@ -1,0 +1,52 @@
+From 06f2391e5d70e423b3e62615a46b8212ff1ee7c6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 16:52:06 -0500
+Subject: [PATCH 2/3] Fill whole VkSurfaceFormatKHR entries in GetFormats
+
+vkGetPhysicalDeviceSurfaceFormatsKHR returns an array of
+VkSurfaceFormatKHR, each a format and a colour space (8 bytes).
+GetFormats() memcpy'd its local VkFormat array (4 bytes per entry) into
+it, so the first entry got its format and the bytes after it were never
+written: colorSpace kept whatever the caller's memory held. With the one
+format offered today (B8G8R8A8_UNORM), an application that requires
+VK_COLOR_SPACE_SRGB_NONLINEAR_KHR saw a random colour space and could
+reject the only format. It also left *count unchanged when the caller
+passed a larger count, which the Vulkan specification forbids.
+
+Each entry is now written as {format, SRGB_NONLINEAR}, and *count is set
+to the number written.
+
+Known from reading the code; not reproduced on hardware.
+---
+ Wsi.cpp | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/Wsi.cpp b/Wsi.cpp
+index 6bf6182..7bcbe11 100644
+--- a/Wsi.cpp
++++ b/Wsi.cpp
+@@ -406,8 +406,19 @@ VkResult VKLayerSurface::GetFormats(VkPhysicalDevice physDev, uint32_t *count, V
+ 		*count = formatCnt;
+ 		return VK_SUCCESS;
+ 	}
+-	memcpy(surfaceFormats, formats, sizeof(VkFormat)*std::min<uint32_t>(*count, formatCnt));
+-	if (*count < formatCnt)
++	// Each entry is a VkSurfaceFormatKHR (format and colour space), not a
++	// bare VkFormat: copying the VkFormat array with memcpy filled only the
++	// first four bytes of each entry and left colorSpace as whatever the
++	// caller's memory held. Applications that check the colour space (Zink,
++	// SDL, games choosing a format) could then reject the only format.
++	uint32_t written = std::min<uint32_t>(*count, formatCnt);
++	for (uint32_t i = 0; i < written; i++) {
++		surfaceFormats[i].format = formats[i];
++		surfaceFormats[i].colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
++	}
++	// The Vulkan spec requires *count to hold the number written.
++	*count = written;
++	if (written < formatCnt)
+ 		return VK_INCOMPLETE;
+ 	return VK_SUCCESS;
+ }
+-- 
+2.43.0
+

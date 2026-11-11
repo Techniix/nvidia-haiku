@@ -1,0 +1,128 @@
+From 85aa8dd3c06cc668ef62cb375368b3907fbe9779 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 11 Nov 2026 16:52:06 -0500
+Subject: [PATCH 3/3] Print layer trace only with VIDEOSTREAMSWSI_DEBUG
+
+The layer printed a line on stdout for vkCreateInstance,
+vkDestroyInstance, vkCreateDevice (plus the instance pointer),
+vkDestroyDevice and both extension enumerations. That is useful while
+debugging the layer and noise everywhere else: every Vulkan or Zink
+application printed it, several times per start, and it filled OBS's
+logs.
+
+The lines are now printed only when the VIDEOSTREAMSWSI_DEBUG
+environment variable is set. Messages for unimplemented entry points in
+Wsi.cpp still go to stderr unconditionally, since they report a real
+limitation.
+---
+ Layer.cpp | 33 ++++++++++++++++++++++++---------
+ 1 file changed, 24 insertions(+), 9 deletions(-)
+
+diff --git a/Layer.cpp b/Layer.cpp
+index 656cea1..59ca0a8 100644
+--- a/Layer.cpp
++++ b/Layer.cpp
+@@ -5,6 +5,8 @@
+ #include <string.h>
+ #include <pthread.h>
+ 
++#include <stdlib.h>
++
+ #include <map>
+ #include <vector>
+ 
+@@ -155,11 +157,24 @@ LayerDevice *LayerDevice::FromHandle(VkDevice device)
+ }
+ 
+ 
++// Trace output for each layer entry point. It was printed unconditionally
++// and ended up in every application's log (OBS printed it on every context
++// creation). Set VIDEOSTREAMSWSI_DEBUG to see it.
++static bool
++TraceEnabled()
++{
++	static const bool enabled = getenv("VIDEOSTREAMSWSI_DEBUG") != NULL;
++	return enabled;
++}
++
++#define TRACE(...) do { if (TraceEnabled()) printf(__VA_ARGS__); } while (0)
++
++
+ //#pragma mark - hooks
+ 
+ static VkResult VKAPI_CALL Layer_CreateInstance(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkInstance* pInstance)
+ {
+-	printf("VideoStreamsWsi: vkCreateInstance(%p)\n", (void*)*pInstance);
++	TRACE("VideoStreamsWsi: vkCreateInstance(%p)\n", (void*)*pInstance);
+ 
+ 	ObjectDeleter<LayerInstance> layerInst(new LayerInstance());
+ 	VkCheckRet(layerInst->Init(pCreateInfo, pAllocator, pInstance));
+@@ -174,7 +189,7 @@ static VkResult VKAPI_CALL Layer_CreateInstance(const VkInstanceCreateInfo* pCre
+ static void VKAPI_CALL Layer_DestroyInstance(VkInstance instance, const VkAllocationCallbacks* pAllocator)
+ {
+ 	(void)pAllocator;
+-	printf("VideoStreamsWsi: vkDestroyInstance\n");
++	TRACE("VideoStreamsWsi: vkDestroyInstance\n");
+ 	ObjectDeleter<LayerInstance> layerInst;
+ 	{
+ 		PthreadMutexLocker lock(&sInstanceMapLock);
+@@ -201,9 +216,9 @@ static VkResult VKAPI_CALL Layer_EnumerateInstanceLayerProperties(uint32_t *pCou
+ 
+ static VkResult VKAPI_CALL Layer_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice)
+ {
+-	printf("VideoStreamsWsi: vkCreateDevice\n");
++	TRACE("VideoStreamsWsi: vkCreateDevice\n");
+ 
+-	printf("instance: %p\n", *(void**)physicalDevice);
++	TRACE("instance: %p\n", *(void**)physicalDevice);
+ 
+ 	ObjectDeleter<LayerDevice> layerDev(new LayerDevice(LayerInstance::FromPhysDev(physicalDevice)));
+ 	VkCheckRet(layerDev->Init(physicalDevice, pCreateInfo, pAllocator, pDevice));
+@@ -218,7 +233,7 @@ static VkResult VKAPI_CALL Layer_CreateDevice(VkPhysicalDevice physicalDevice, c
+ static void VKAPI_CALL Layer_DestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator)
+ {
+ 	(void)pAllocator;
+-	printf("VideoStreamsWsi: vkDestroyDevice\n");
++	TRACE("VideoStreamsWsi: vkDestroyDevice\n");
+ 	ObjectDeleter<LayerDevice> layerDev;
+ 	{
+ 		PthreadMutexLocker lock(&sDeviceMapLock);
+@@ -231,7 +246,7 @@ static void VKAPI_CALL Layer_DestroyDevice(VkDevice device, const VkAllocationCa
+ 
+ static VkResult VKAPI_CALL Layer_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice, const char *pLayerName, uint32_t *pCount, VkExtensionProperties *pProperties)
+ {
+-	printf("VideoStreamsWsi: vkEnumerateDeviceExtensionProperties\n");
++	TRACE("VideoStreamsWsi: vkEnumerateDeviceExtensionProperties\n");
+ 	if (pLayerName && !strcmp(pLayerName, "VK_LAYER_window_system_integration")) {
+ 		static const VkExtensionProperties extensions[] = {
+ 			{VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_SWAPCHAIN_SPEC_VERSION}
+@@ -249,7 +264,7 @@ static VkResult VKAPI_CALL Layer_EnumerateDeviceExtensionProperties(VkPhysicalDe
+ 
+ extern "C" _EXPORT PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* pName)
+ {
+-	//printf("VideoStreamsWsi: vkGetInstanceProcAddr(%p, \"%s\")\n", (void*)instance, pName);
++	//TRACE("VideoStreamsWsi: vkGetInstanceProcAddr(%p, \"%s\")\n", (void*)instance, pName);
+ 
+ 	GET_PROC_ADDR(CreateInstance);
+ 	GET_PROC_ADDR(DestroyInstance);
+@@ -275,7 +290,7 @@ extern "C" _EXPORT PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstanc
+ 
+ extern "C" _EXPORT PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char *pName)
+ {
+-	//printf("VideoStreamsWsi: vkGetDeviceProcAddr(%p, \"%s\")\n", (void*)device, pName);
++	//TRACE("VideoStreamsWsi: vkGetDeviceProcAddr(%p, \"%s\")\n", (void*)device, pName);
+ 
+ 	GET_PROC_ADDR(DestroyDevice);
+ 
+@@ -295,7 +310,7 @@ extern "C" _EXPORT PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice de
+ 
+ extern "C" _EXPORT VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(const VkEnumerateInstanceExtensionPropertiesChain *chain, const char *pLayerName, uint32_t *pCount, VkExtensionProperties *pProperties)
+ {
+-	printf("VideoStreamsWsi: vkEnumerateInstanceExtensionProperties\n");
++	TRACE("VideoStreamsWsi: vkEnumerateInstanceExtensionProperties\n");
+ 
+ 	if (pLayerName && !strcmp(pLayerName, "VK_LAYER_window_system_integration")) {
+ 		static const VkExtensionProperties extensions[] = {
+-- 
+2.43.0
+
