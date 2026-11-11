@@ -47,6 +47,7 @@ about behaviour.
 | `registry_dwords` driver setting (RM registry values without a rebuild) | Syntax-checked | |
 | NVK: routine notices only with `NVK_NVRM_DEBUG` | Host tests pass | `RM reports SM version`, `deferring reuse of a sync slot` |
 | `tools/renga-test.sh`: build, install, run tests, collect one report archive | Smoke-tested on Linux | Timeout and collection paths only |
+| GPU presentation interface, driver half (R-1) | Syntax-checked | Header compiles as C and C++; see Display |
 
 ## Inherited from `rtx5070-event-sync`
 
@@ -67,7 +68,8 @@ about behaviour.
 | Mode list, mode setting, EDID | Tested on stock Haiku | High refresh rates and all reported modes not verified |
 | DPMS on/off | Written | Present in the accelerant; not verified |
 | Hardware cursor | Written | Hooks present in the accelerant; not verified on this branch |
-| Page flip and vblank events | Not started | Needs the accelerant extension (`RENGA-REQUESTS.md`, R-1) |
+| Page flips with completion events (R-1 driver half) | Syntax-checked | `accelerant/NvPresent.cpp`, `headers/GpuPresent.h`: buffer import from an NVK memory descriptor (linear and block-linear), flips on any layer with position and scaling, completion through NVKMS notifiers and the modeset event queue, scanout export. Not run; app_server does not call it yet |
+| Vblank events | Blocked (Quasar kernel) | `NVKMS_IOCTL_NOTIFY_VBLANK` needs `nvkms_get_per_open_data()`, which returns NULL in `nvkms-haiku.cpp`; `request_vblank` returns `B_NOT_SUPPORTED` until it is implemented |
 | Multihead, DisplayPort MST | Not started | app_server side is Renga F-38 |
 | Variable refresh rate | Not started | |
 | HDR | Not started | Stretch goal |

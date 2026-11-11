@@ -63,8 +63,8 @@ typedef struct {
 } gpu_present_caps;
 
 typedef struct {
-	BRect   source;             // in buffer pixels
-	BRect   destination;        // on screen; ignored for the primary plane
+	gpu_rect source;            // {x, y, width, height}, buffer pixels
+	gpu_rect destination;       // on screen; ignored for the primary plane
 	uint32  flags;              // B_GPU_FLIP_VSYNC, _ASYNC, _VRR
 	int     wait_fd;            // -1, or a descriptor that becomes readable
 	                            // when rendering to the buffer is complete

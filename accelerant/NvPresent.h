@@ -1,0 +1,103 @@
+#pragma once
+
+/*
+ * The driver half of GPU presentation (headers/GpuPresent.h, proposal R-1 in
+ * docs/RENGA-REQUESTS.md) on top of NVKMS.
+ *
+ * Buffers come from a client (a Vulkan WSI) as RM memory exported to a file
+ * descriptor, the form NVK's vkGetMemoryFdKHR produces. They are registered
+ * with NVKMS as surfaces and flipped onto a head's layers. Flip completion is
+ * reported through NVKMS completion notifiers with "awaken", which makes
+ * NVKMS queue NVKMS_EVENT_TYPE_FLIP_OCCURRED on this client's event queue;
+ * the queue is readable on the modeset device's descriptor, which Quasar's
+ * kernel side already supports select() on (KmsDevice.cpp).
+ */
+
+#include <map>
+#include <deque>
+#include <mutex>
+
+#include <NvRmApi.h>
+#include <NvRmDevice.h>
+#include <NvKmsApi.h>
+#include <NvKmsDevice.h>
+#include <NvKmsSurface.h>
+
+#include <GpuPresent.h>
+
+
+class NvPresent {
+public:
+	// What the presenter needs from the accelerant. scanoutMemory returns
+	// the RM handle and size of the memory shown on a head's primary layer,
+	// or 0 when none is.
+	struct Context {
+		NvRmDevice *rmDev;
+		NvKmsApi *kms;
+		NvKmsDevice *kmsDev;
+		NvKmsDispHandle disp;
+		NvU32 headCount;
+		NvHandle (*scanoutMemory)(NvU32 head, gpu_buffer_desc *desc);
+	};
+
+	explicit NvPresent(const Context &context);
+	~NvPresent();
+
+	NvPresent(const NvPresent &) = delete;
+	NvPresent &operator=(const NvPresent &) = delete;
+
+	static const gpu_present_hooks *Hooks();
+	static void SetInstance(NvPresent *present);
+
+	status_t GetCaps(uint32 head, gpu_present_caps *caps);
+	status_t ImportBuffer(const gpu_buffer_desc *desc, uint32 *_id);
+	status_t ReleaseBuffer(uint32 id);
+	status_t Flip(uint32 head, uint32 plane, uint32 id,
+		const gpu_flip_params *params);
+	status_t DisablePlane(uint32 head, uint32 plane);
+	status_t RequestVblank(uint32 head);
+	int32 EventFd();
+	status_t NextEvent(gpu_present_event *event);
+	status_t ExportScanout(uint32 head, gpu_buffer_desc *desc);
+
+private:
+	struct Buffer {
+		NvKmsSurface surface;
+		gpu_buffer_desc desc;
+		uint32 useCount = 0;	// flips that may still show it
+		bool released = false;
+	};
+
+	struct PlaneState {
+		uint32 shown = 0;		// buffer id on screen, 0 = none
+		uint32 pending = 0;		// buffer id of a flip not yet complete
+		uint64 pendingUserData = 0;
+		uint32 nextNotifier = 0;
+	};
+
+	void SetUpNotifiers();
+	uint32 NotifierOffsetInWords(uint32 head, uint32 plane, uint32 index) const;
+	bool NotifierDone(uint32 head, uint32 plane, uint32 index) const;
+	void ResetNotifier(uint32 head, uint32 plane, uint32 index);
+	void DropBufferUse(uint32 id);
+	PlaneState *Plane(uint32 head, uint32 plane);
+	status_t SubmitFlip(uint32 head, uint32 plane, NvKmsSurfaceHandle surface,
+		const gpu_flip_params *params, bool withNotifier, uint32 notifier);
+
+	Context fContext;
+	std::mutex fLock;
+
+	std::map<uint32, Buffer> fBuffers;
+	uint32 fNextId = 1;
+	std::map<std::pair<uint32, uint32>, PlaneState> fPlanes;
+	std::deque<gpu_present_event> fEvents;
+
+	// Completion notifiers: NVKMS writes flip completion into a small NISO
+	// surface; slot layout as in NVIDIA's nvkms-kapi-notifiers.
+	NvRmObject fNotifierMemory;
+	NvRmMemoryMapping fNotifierMapping;
+	NvKmsSurface fNotifierSurface;
+	enum NvKmsNIsoFormat fNotifierFormat {};
+	bool fHaveNotifiers = false;
+	bool fEventsDeclared = false;
+};

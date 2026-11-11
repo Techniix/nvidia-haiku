@@ -11,6 +11,9 @@
 
 #include "NvUtils.h"
 #include "NvKmsBitmap.h"
+#include "NvPresent.h"
+
+#include <memory>
 
 extern "C" {
 #include "ctrl/ctrl2080/ctrl2080gpu.h" // NV2080_CTRL_CMD_GPU_GET_NAME_STRING
@@ -117,6 +120,10 @@ private:
 	} fCursorPos, fCursorHotSpot {};
 	bool fCursorVisible = false;
 
+	// GPU presentation (headers/GpuPresent.h), created on first request.
+	std::unique_ptr<NvPresent> fPresent;
+	bool fIsClone = false;
+
 	NvAccelerant(int devFd);
 
 	NVDpyId FindConnectedDisplay(NVDpyIdList validDpys);
@@ -153,6 +160,9 @@ public:
 	void ShowCursor(bool isVisible);
 	void SetCursorShape(uint16 width, uint16 height, uint16 hotX, uint16 hotY, const uint8* andMask, const uint8* xorMask);
 	void SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uint16 hotY, color_space colorSpace, uint16 bytesPerRow, const uint8* bitmapData);
+
+	const gpu_present_hooks *PresentHooks();
+	NvHandle ScanoutMemory(NvU32 head, gpu_buffer_desc *desc);
 };
 
 
@@ -278,6 +288,7 @@ void NvAccelerant::Clone(void* data)
 	CheckErrno(devFd.Get());
 
 	sInstance = new NvAccelerant(devFd.Get());
+	sInstance->fIsClone = true;
 }
 
 void NvAccelerant::Uninit()
@@ -733,6 +744,47 @@ void NvAccelerant::SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uin
 }
 
 
+const gpu_present_hooks *NvAccelerant::PresentHooks()
+{
+	// Each accelerant instance has its own NVKMS client, and flip events go
+	// to the client that flipped. Only app_server's instance presents.
+	if (fIsClone)
+		return nullptr;
+	if (!fPresent) {
+		NvPresent::Context context {
+			.rmDev = &fRmDev,
+			.kms = &fKms,
+			.kmsDev = &fKmsDev,
+			.disp = fDisp,
+			.headCount = fKmsDev.Info().numHeads,
+			.scanoutMemory = [](NvU32 head, gpu_buffer_desc *desc) {
+				return NvAccelerant::Instance()->ScanoutMemory(head, desc);
+			},
+		};
+		fPresent = std::make_unique<NvPresent>(context);
+		NvPresent::SetInstance(fPresent.get());
+	}
+	return NvPresent::Hooks();
+}
+
+// The memory on the head driven by this accelerant: the framebuffer that
+// app_server draws into. Other heads are not driven yet (multihead).
+NvHandle NvAccelerant::ScanoutMemory(NvU32 head, gpu_buffer_desc *desc)
+{
+	if (head != fHead || !fFramebuffer.IsSet())
+		return 0;
+	*desc = {};
+	desc->width = fFramebuffer.Width();
+	desc->height = fFramebuffer.Height();
+	desc->bytes_per_row = fFramebuffer.BytesPerRow();
+	desc->format = fFramebuffer.ColorSpace();
+	desc->modifier = B_GPU_MODIFIER_LINEAR;
+	desc->offset = 0;
+	desc->size = (fFramebuffer.BitsLength() + B_PAGE_SIZE - 1) / B_PAGE_SIZE * B_PAGE_SIZE;
+	return fFramebuffer.Memory().Get();
+}
+
+
 _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 {
 	switch (feature) {
@@ -999,6 +1051,19 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 			return (void*)fn;
 		}
 #endif
+
+		// Renga GPU presentation (provisional, docs/RENGA-REQUESTS.md R-1).
+		// Not a function pointer like the hooks above: the table itself.
+		// Only the accelerant's owner gets it; clones return NULL, because
+		// flips and their events belong to one client.
+		case B_GPU_PRESENT_HOOKS: {
+			try {
+				return (void*)NvAccelerant::Instance()->PresentHooks();
+			} catch (const std::system_error &ex) {
+				debug_printf("[!] nvidia_gsp: GPU presentation unavailable: %s\n", ex.what());
+				return nullptr;
+			}
+		}
 
 		default:
 			return nullptr;

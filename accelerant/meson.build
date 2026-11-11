@@ -15,6 +15,8 @@ shared_module('nvidia_gsp',
 	'Accelerant.cpp',
 	'NvUtils.cpp',
 	'NvKmsBitmap.cpp',
+	'NvPresent.cpp',
+	include_directories: include_directories('../headers'),
 	dependencies: [
 		dep_nvrm_client_cpp,
 		dep_nvkms_client_cpp,

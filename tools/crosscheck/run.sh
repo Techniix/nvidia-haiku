@@ -67,7 +67,7 @@ check() { # kind file
 		kernel)  cmd+=("${kernel[@]}" "${nvinc[@]}" -I"$root/nvidia_gsp") ;;
 		modeset) cmd+=("${kernel[@]}" "${nvinc[@]}" "${kmsinc[@]}" -I"$root/nvidia_gsp") ;;
 		user)    cmd+=("${nvinc[@]}" "${kmsinc[@]}" -I"$root/nvrm_cpp_sdk"
-		               -I"$root/accelerant" -I"$H/private/graphics/common"
+		               -I"$root/accelerant" -I"$root/headers" -I"$H/private/graphics/common"
 		               -I"$H/private/shared" -I"$H/private/interface"
 		               -I"$H/private/app") ;;
 	esac
@@ -95,6 +95,7 @@ else
 	for f in "$root"/nvidia_gsp/nvidia-modeset/*.cpp; do check modeset "$f"; done
 	for f in "$root"/nvrm_cpp_sdk/*.cpp "$root"/accelerant/Accelerant.cpp \
 			"$root"/accelerant/NvUtils.cpp "$root"/accelerant/NvKmsBitmap.cpp \
+			"$root"/accelerant/NvPresent.cpp \
 			"$root"/accelerant/ModesetTool.cpp; do
 		check user "$f"
 	done
