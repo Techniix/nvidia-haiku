@@ -34,6 +34,7 @@ extern "C" {
 #include "Driver.h"
 #include "ControlDevice.h"
 #include "IntrSafePool.h"
+#include "os-haiku-misc.h"
 
 #if 0
 #define TRACE(...) dprintf(__VA_ARGS__)
@@ -74,6 +75,14 @@ void NV_API_CALL out_string(const char *str)
 int NV_API_CALL nv_printf(NvU32 debuglevel, const char *printf_format, ...)
 {
 	TRACE("nv_printf()\n");
+
+	// Like Linux's nv_printf(): messages below the current debug level are
+	// dropped. The default level prints warnings and errors (Xid reports are
+	// errors); the "verbose" driver setting prints everything. See
+	// os-haiku-misc.cpp.
+	if (!nv_haiku_should_log(debuglevel))
+		return 0;
+
 	va_list arglist;
 
 	InterruptsSpinLocker lock(&nv_error_string_lock);
@@ -81,7 +90,8 @@ int NV_API_CALL nv_printf(NvU32 debuglevel, const char *printf_format, ...)
 	va_start(arglist, printf_format);
 	vsnprintf(nv_error_string, MAX_ERROR_STRING, printf_format, arglist);
 	nv_error_string[MAX_ERROR_STRING - 1] = 0;
-	dprintf(nv_error_string);
+	// The text is data, not a format: RM messages can contain '%'.
+	dprintf("%s", nv_error_string);
 	va_end(arglist);
 
 	return 0;
@@ -2124,6 +2134,10 @@ NV_STATUS NV_API_CALL nv_acquire_fabric_mgmt_cap(int fd, int *duped_fd)
 NV_STATUS NV_API_CALL os_registry_init(void)
 {
     TRACE("os_registry_init()\n");
+
+	// The verbose switch and any registry_dwords from the driver settings
+	// file. Read first, so the keys the driver itself needs (below) win.
+	nv_haiku_load_settings();
 
 	// Handle nonstall interrupts in DPC instead of interrupt handler directly.
 	rm_write_registry_dword(nullptr, nullptr, NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR, NV_REG_PROCESS_NONSTALL_INTR_IN_LOCKLESS_ISR_DISABLE);

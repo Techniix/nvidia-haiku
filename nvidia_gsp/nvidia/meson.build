@@ -6,6 +6,7 @@ lib_nvidia_gsp = shared_library('nvidia_gsp',
 	'ControlDevice.cpp',
 	'Device.cpp',
 	'os-haiku.cpp',
+	'os-haiku-misc.cpp',
 	'WorkQueue.cpp',
 	'stubs.c',
 	include_directories: [
