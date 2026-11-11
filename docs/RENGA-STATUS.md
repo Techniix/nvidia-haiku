@@ -80,7 +80,7 @@ about behaviour.
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Renga WSI (zero-copy) | Blocked | Accelerant extension, R-1 |
+| Renga WSI | Designed (`docs/RENGA-WSI.md`) | Swapchains in NVK on Mesa's common WSI with a Haiku platform; a thin layer keeps the `SetBitmapHook()` surface ABI that Zink, OBS and Eglantine use. Zero-copy waits on F-47/F-58 |
 | `VK_EXT_external_memory_host` | Blocked | Needs long-term pinning of user pages (`RENGA-REQUESTS.md`, R-5); `os_lock_user_pages()` refuses cleanly and NVK does not offer the extension |
 | External memory/semaphore sharing between processes | Written (inherited) | NVK shares through RM's export-object-to-fd on an `nvidiactl` descriptor, not dma-buf; needs a test with two processes passing the descriptor |
 | `VK_EXT_memory_budget` | Not started | |
