@@ -5,16 +5,47 @@ read by the Renga work to plan its side; Quasar's branch never changes that
 repository. Each request states what is needed, the proposed interface and
 the reason. A request is a proposal until the Renga side accepts it.
 
-States: **Draft** (not ready to act on), **Proposed**, **Accepted**,
-**Landed** (with the Renga commit).
+States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
+**Accepted** (with the Renga batch), **Landed** (with the Renga commit).
+
+## Renga's reply of 2026-11-11
+
+- R-1: file-descriptor passing to app_server (`SCM_RIGHTS` on a local socket
+  alongside the app_server link) and the header's home and names come in
+  batch F-58. The proposed `<add-ons/graphics/GpuPresent.h>` and table layout
+  are the starting point; changes will be answered in this file. The
+  app_server side (GPU buffers in overlay bitmaps, the flip queue, events on
+  epoll) is on the F-47 checklist for the GPU stage. Quasar is to settle the
+  three open points on the RTX 5070 before then.
+- R-2: GPU stage, with R-1. OBS Studio asks for the same (its O-10) and
+  needs, per frame, a handle importable with EGL or Vulkan external memory,
+  the damaged region and a timestamp.
+- R-3: batch F-49. R-4: with game mode, F-50; Renga proposes the interface
+  here once the service design is fixed. R-5: accepted in principle for the
+  GPU stage, because it changes how area and team teardown treat wired
+  pages; the extension stays unadvertised until then.
+- Media Kit phase 5 (`446221a6`) added a hardware video interface,
+  `headers/private/media/VideoAcceleration.h`. Back ends are add-ons in
+  `add-ons/media/video_accelerators` exporting
+  `instantiate_video_accelerator(version)`; decode takes whole compressed
+  packets; surfaces are NV12 or P010; the FFmpeg plug-in uses it. A Quasar
+  back end must match `B_VIDEO_ACCELERATION_VERSION`. Whether it needs to be
+  a public header is open (see "Open questions to Renga").
+
+## Open questions to Renga
+
+- VideoAcceleration.h: a back end shipped in Quasar's package, not built with
+  the system, needs the header and a stable version. Request: install it with
+  the development headers (it may stay private API), and bump
+  `B_VIDEO_ACCELERATION_VERSION` on any change of layout.
 
 | ID | Request | State | Roadmap entry |
 | --- | --- | --- | --- |
-| R-1 | Vendor-neutral accelerant extension: buffer import/export, page flip with completion events, vblank events | Proposed (first draft) | F-35, F-47 |
-| R-2 | Scanout and window buffer export for privileged capture clients | Draft | F-47, F-31 |
-| R-3 | `futex()` wait/wake | Already planned | F-49 |
-| R-4 | Game mode notifications for drivers | Draft | F-50 |
-| R-5 | Long-term pinning of user pages for device DMA | Proposed | F-35 (NVK coverage), F-48 |
+| R-1 | Vendor-neutral accelerant extension: buffer import/export, page flip with completion events, vblank events | Accepted: F-58 (fd passing, header home), F-47 GPU stage (app_server) | F-35, F-47, F-58 |
+| R-2 | Scanout and window buffer export for privileged capture clients | Scheduled: F-47 GPU stage, with R-1 | F-47, F-31 |
+| R-3 | `futex()` wait/wake | Scheduled: F-49 | F-49 |
+| R-4 | Game mode notifications for drivers | Scheduled: F-50 (Renga proposes the interface) | F-50 |
+| R-5 | Long-term pinning of user pages for device DMA | Accepted in principle: GPU stage | F-35 (NVK coverage), F-48 |
 
 ## R-1 Accelerant extension
 
@@ -131,11 +162,13 @@ typedef struct {
 
 ## R-2 Buffer export for capture
 
-Draft. A privileged client (Sunshine, OBS, the Media Kit capture API) obtains
+Scheduled. A privileged client (Sunshine, OBS, the Media Kit capture API) obtains
 the current scanout buffer or a window's buffer as a GPU handle. The driver
 side is `export_scanout()` in R-1's table, returning a descriptor the client
 imports into Vulkan. Renga decides who may ask, and how a window's buffer is
-named.
+named. OBS also needs the damaged region and a timestamp per frame; the
+timestamp can come from the flip-complete event, the damage only from
+app_server.
 
 ## R-3 `futex()`
 

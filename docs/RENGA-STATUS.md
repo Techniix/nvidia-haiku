@@ -59,7 +59,7 @@ about behaviour.
 | NVK patch 0009 (per-channel stall report) | Written | Host tests pass; not built for Haiku |
 | mesa-zink 0001 (pbuffers without a window) | Written | Not built for Haiku |
 | OBS Studio through Zink | Hangs | See `docs/event-sync.md`, Open issues |
-| Presentation (VideoStreamsWsi, three rotating bitmaps) | Tested on stock Haiku | Two copies and two waits per frame; rare tearing |
+| Presentation (VideoStreamsWsi, three rotating bitmaps) | Tested on stock Haiku | Two copies and two waits per frame; rare tearing. `GetFormats` fix (whole `VkSurfaceFormatKHR` entries) applies; not built |
 
 ## Display
 
@@ -93,7 +93,7 @@ about behaviour.
 | Area | State | Notes |
 | --- | --- | --- |
 | Vulkan Video in NVK | Not started | Investigation comes first |
-| Media Kit hardware video back end | Not started | |
+| Media Kit hardware video back end | Not started | Interface exists on Renga: `headers/private/media/VideoAcceleration.h` (Media Kit phase 5, `446221a6`) |
 
 ## Power and system
 
@@ -103,7 +103,7 @@ about behaviour.
 | Temperature, fan, clocks, utilisation, VRAM reporting | Not started | |
 | Suspend/resume hooks | Not started | Renga F-37 |
 | Recovery from channel and GPU faults | Not started | NVK 0009 turns an RC error into `VK_ERROR_DEVICE_LOST` during CPU waits |
-| Quiet logging by default | Syntax-checked (kernel), host-tested (NVK) | VideoStreamsWsi's messages are still unconditional |
+| Quiet logging by default | Syntax-checked (kernel), host-tested (NVK), patch applies (VideoStreamsWsi) | `verbose true` in the driver settings file, `NVK_NVRM_DEBUG`, `VIDEOSTREAMSWSI_DEBUG` |
 | Remaining panic stubs (`nvidia_gsp/nvidia/stubs.c`) | Reduced | 19 outside NVLink/NVSwitch/IBM NPU/SPDM: scatter-gather and peer DMA, page refcounts, IMEX channels, mmap revocation, PCI recovery |
 
 ## Renga integration
