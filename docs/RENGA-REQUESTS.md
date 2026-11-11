@@ -10,7 +10,7 @@ States: **Draft** (not ready to act on), **Proposed**, **Accepted**,
 
 | ID | Request | State | Roadmap entry |
 | --- | --- | --- | --- |
-| R-1 | Vendor-neutral accelerant extension: buffer import/export, page flip with completion events, vblank events | Draft | F-35, F-47 |
+| R-1 | Vendor-neutral accelerant extension: buffer import/export, page flip with completion events, vblank events | Proposed (first draft) | F-35, F-47 |
 | R-2 | Scanout and window buffer export for privileged capture clients | Draft | F-47, F-31 |
 | R-3 | `futex()` wait/wake | Already planned | F-49 |
 | R-4 | Game mode notifications for drivers | Draft | F-50 |
@@ -18,18 +18,124 @@ States: **Draft** (not ready to act on), **Proposed**, **Accepted**,
 
 ## R-1 Accelerant extension
 
-Draft. The interface will be written here once Quasar's driver half has been
-prototyped against NVKMS, so the proposal reflects what the hardware path
-can deliver (flip completion and vblank event sources, buffer handle type).
-The requirements from F-47 are: GPU buffer import and export by driver
-handle, page flips with completion events, vblank events, the same interface
-for the future LinuxKPI DRM drivers.
+Proposed as a first draft, so the Renga side can start on app_server while
+the driver half is written. Nothing below is implemented or tested; the
+"Open points" must be settled on the RTX 5070 before the interface is fixed.
+
+**What the hardware path offers (from NVKMS's client interface,
+`nvkms-api.h`, read on 2026-11-11):**
+
+- Surfaces are registered from RM memory (`NVKMS_IOCTL_REGISTER_SURFACE`),
+  by RM handle or by file descriptor, and can be passed between NVKMS
+  clients (`GRANT_SURFACE` / `ACQUIRE_SURFACE`, by descriptor).
+- `NVKMS_IOCTL_FLIP` flips per head and per layer; layers can be positioned
+  (`SET_LAYER_POSITION`).
+- Events are queued per client (`DECLARE_EVENT_INTEREST`, `GET_NEXT_EVENT`),
+  and Quasar's modeset device already supports `select()` on that queue
+  (`KmsDevice.cpp`). A flip-occurred event type exists.
+- `NVKMS_IOCTL_NOTIFY_VBLANK` signals a descriptor at the next vblank of a
+  head (one-shot, re-armed by the caller).
+- A VRR semaphore surface can be exported and signalled.
+
+**Proposed interface.** One new accelerant feature code returns a table of
+functions. All calls are made by app_server (the accelerant's owner).
+
+```c
+// <add-ons/graphics/GpuPresent.h> (name provisional)
+#define B_GPU_PRESENT_HOOKS  0x52474100  // vendor-neutral feature code
+
+enum { B_GPU_BUFFER_FD = 1 };   // handle is a file descriptor
+
+typedef struct {
+	uint32  handle_type;        // B_GPU_BUFFER_FD
+	int     handle;             // driver-specific shareable descriptor
+	uint32  width, height;
+	uint32  bytes_per_row;      // 0 if not linear
+	color_space format;
+	uint64  modifier;           // driver tiling/layout, 0 = linear
+	uint64  offset;             // of the image inside the object
+} gpu_buffer_desc;
+
+typedef struct {
+	uint32  planes_per_head;    // 1 = primary only
+	uint32  flags;              // B_GPU_PRESENT_VRR, _ASYNC_FLIP, _SCALING...
+	uint32  max_width, max_height;
+} gpu_present_caps;
+
+typedef struct {
+	BRect   source;             // in buffer pixels
+	BRect   destination;        // on screen; ignored for the primary plane
+	uint32  flags;              // B_GPU_FLIP_VSYNC, _ASYNC, _VRR
+	int     wait_fd;            // -1, or a descriptor that becomes readable
+	                            // when rendering to the buffer is complete
+	uint64  user_data;          // returned in the completion event
+} gpu_flip_params;
+
+enum { B_GPU_EVENT_FLIP_COMPLETE = 1, B_GPU_EVENT_VBLANK = 2 };
+
+typedef struct {
+	uint32  type;
+	uint32  head;
+	uint32  plane;
+	uint64  user_data;
+	bigtime_t time;             // system_time() of the event
+	uint64  sequence;           // vblank count
+} gpu_present_event;
+
+typedef struct {
+	uint32   version;
+	status_t (*get_caps)(uint32 head, gpu_present_caps* caps);
+	status_t (*import_buffer)(const gpu_buffer_desc* desc, uint32* _id);
+	status_t (*release_buffer)(uint32 id);
+	status_t (*flip)(uint32 head, uint32 plane, uint32 id,
+				const gpu_flip_params* params);
+	status_t (*disable_plane)(uint32 head, uint32 plane);
+	status_t (*request_vblank)(uint32 head, bool repeat);
+	int      (*event_fd)(void);  // readable while events are queued;
+	                             // usable with select, poll and epoll
+	status_t (*next_event)(gpu_present_event* event);
+	// R-2: the current scanout buffer of a head, as a new descriptor.
+	status_t (*export_scanout)(uint32 head, gpu_buffer_desc* desc);
+} gpu_present_hooks;
+```
+
+**Why these choices:**
+
+- *A file descriptor as the buffer handle.* It is the one handle both driver
+  families can share between processes: Quasar's NVK already exports memory
+  as an `nvidiactl` descriptor through RM, and LinuxKPI DRM drivers have
+  dma-buf descriptors. The client passes it to app_server, which needs a way
+  to receive a descriptor from a client (see "Needed from Renga").
+- *An event descriptor, not a callback.* app_server waits on it in an
+  existing thread together with its other sources, and Renga has `epoll`.
+- *Planes.* Windowed zero-copy needs an overlay plane with a destination
+  rectangle; fullscreen direct scanout is a flip on plane 0.
+
+**Needed from Renga:**
+
+1. app_server: accept a buffer descriptor from a client for an overlay
+   bitmap or a direct-scanout window, and the flip queue of F-47.
+2. A way to pass a file descriptor from an application to app_server (the
+   app_server link has none today; `SCM_RIGHTS` on a local socket pair would
+   do).
+3. A decision on the header's home and names, since the LinuxKPI DRM
+   drivers implement the same table.
+
+**Open points (need the hardware):**
+
+- How many layers per head NVKMS reports on the RTX 5070, and whether an
+  overlay layer can be positioned and scaled as windowed presentation needs.
+- Whether a flip can wait on the client's rendering in the kernel
+  (`wait_fd`), or whether the WSI must wait before asking for the flip.
+- Flip timing on a VRR mode, and the latency from vblank to the event.
 
 ## R-2 Buffer export for capture
 
 Draft. A privileged client (Sunshine, OBS, the Media Kit capture API) obtains
-the current scanout buffer or a window's buffer as a GPU handle. Depends on
-the handle type chosen in R-1.
+the current scanout buffer or a window's buffer as a GPU handle. The driver
+side is `export_scanout()` in R-1's table, returning a descriptor the client
+imports into Vulkan. Renga decides who may ask, and how a window's buffer is
+named.
 
 ## R-3 `futex()`
 
