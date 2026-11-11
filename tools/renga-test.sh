@@ -243,6 +243,35 @@ probe_matrix() {
 	return $status
 }
 
+# OBS's probe (renga branch of OBS-Studio_HaikuOS) follows libobs' real
+# per-frame call order for the Screen Capture case and has switches that each
+# remove one part of it. The default run reproduces the hang if it is there;
+# when it fails, each switch is tried alone, and the ones that make it pass
+# name the part of OBS's load that triggers the driver bug. --stall 5 makes a
+# stuck step print "STALL:" with the GL call it is in, and exit 5.
+obs_probe_matrix() {
+	local dir=$1 probe="./obs-haiku-gl-probe"
+	local common=(--verbose --stall 5 --timeout 60)
+	( cd "$dir" && NVK_NVRM_DEBUG=1 step obs-gl-probe 120 "$probe" "${common[@]}" )
+	local status=$?
+	[ $status -eq 0 ] && return 0
+	local opt
+	for opt in --no-stage --no-stream --no-second-display --no-handoff \
+			--fences "--fps 0"; do
+		local name="obs-gl-probe${opt// /}"
+		# shellcheck disable=SC2086
+		( cd "$dir" && NVK_NVRM_DEBUG=1 step "$name" 120 "$probe" "${common[@]}" $opt )
+	done
+	# And the driver-side suspects, on the default load.
+	( cd "$dir" && NVK_NVRM_DEBUG=1 MESA_VK_ENABLE_SUBMIT_THREAD=0 \
+		step obs-gl-probe.no-submit-thread 120 "$probe" "${common[@]}" )
+	( cd "$dir" && NVK_NVRM_DEBUG=1 ZINK_DEBUG=flushsync \
+		step obs-gl-probe.zink-flushsync 120 "$probe" "${common[@]}" )
+	( cd "$dir" && NVK_NVRM_DEBUG=1 GALLIUM_THREAD=0 \
+		step obs-gl-probe.no-gallium-thread 120 "$probe" "${common[@]}" )
+	return $status
+}
+
 do_run() {
 	local obsDir="" skipTests=0
 	while [ $# -gt 0 ]; do
@@ -277,7 +306,7 @@ do_run() {
 		done
 	fi
 	if [ -n "$obsDir" ] && [ -x "$obsDir/obs-haiku-gl-probe" ]; then
-		( cd "$obsDir" && probe_matrix obs-gl-probe 180 ./obs-haiku-gl-probe --frames 120 )
+		obs_probe_matrix "$obsDir"
 	else
 		echo "SKIPPED  obs-gl-probe (no OBS build found; pass --obs <bin dir>)" >>"$report/summary.txt"
 	fi
