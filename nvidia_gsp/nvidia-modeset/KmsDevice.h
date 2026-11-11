@@ -5,6 +5,7 @@ extern "C" {
 }
 
 #include <lock.h>
+#include <util/DoublyLinkedList.h>
 
 #include "Drivers_cpp.h"
 
@@ -21,7 +22,7 @@ public:
 };
 
 
-class NvHaikuKmsDeviceHandle {
+class NvHaikuKmsDeviceHandle: public DoublyLinkedListLinkImpl<NvHaikuKmsDeviceHandle> {
 private:
 	friend class NvHaikuKmsDevice;
 
@@ -39,6 +40,10 @@ public:
 	static NvHaikuKmsDeviceHandle *FromNvKmsHandle(nvkms_per_open_handle_t *pOpenKernel) {return (NvHaikuKmsDeviceHandle*)(pOpenKernel);}
 
 	void EventQueueChanged(NvBool eventsAvailable);
+
+	// The NVKMS per-open data of a modeset device opened by the current team
+	// as fd, or NULL when fd is not one. Backs nvkms_get_per_open_data().
+	static void *PerOpenDataFromFd(int fd);
 
 	status_t Close();
 	status_t Control(uint32 op, void *data, size_t len);

@@ -292,7 +292,10 @@ void nvkms_event_queue_changed(nvkms_per_open_handle_t *pOpenKernel, NvBool even
 
 void* nvkms_get_per_open_data(int fd)
 {
-	return NULL;
+	// Was "return NULL", which made every NVKMS ioctl that takes a second
+	// descriptor fail: NOTIFY_VBLANK (vblank events), GRANT/ACQUIRE_SURFACE
+	// and the swap-group ioctls. See KmsDevice.cpp.
+	return NvHaikuKmsDeviceHandle::PerOpenDataFromFd(fd);
 }
 
 
