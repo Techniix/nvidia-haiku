@@ -49,6 +49,8 @@ about behaviour.
 | `tools/renga-test.sh`: build, install, run tests, collect one report archive | Smoke-tested on Linux | Timeout and collection paths only |
 | GPU presentation interface, driver half (R-1) | Syntax-checked | Header compiles as C and C++; events on one eventfd; see Display |
 | `nvkms_get_per_open_data()` (second-descriptor NVKMS ioctls) | Syntax-checked | Was `return NULL` |
+| NVK: fence the USERD `GPPut` write and the doorbell; ring stalled channels again and report it | Written | Candidate for the OBS hang; not compiled outside Haiku (needs the full Mesa build) |
+| RM caching type `UNCACHED_WEAK` maps uncached, not write-back | Syntax-checked | `to_haiku_cache_type()` fell through to 0 for it; unknown types now map uncached with a log line |
 
 ## Inherited from `rtx5070-event-sync`
 
@@ -59,7 +61,7 @@ about behaviour.
 | NVK patch 0008 (sync slot reuse, reset baseline) | Written | Host tests pass; not built for Haiku |
 | NVK patch 0009 (per-channel stall report) | Written | Host tests pass; not built for Haiku |
 | mesa-zink 0001 (pbuffers without a window) | Written | Not built for Haiku |
-| OBS Studio through Zink | Hangs | See `docs/event-sync.md`, Open issues |
+| OBS Studio through Zink | Hangs | Lost-doorbell fix built, not tested. See `docs/event-sync.md`, Open issues |
 | Presentation (VideoStreamsWsi, three rotating bitmaps) | Tested on stock Haiku | Two copies and two waits per frame; rare tearing. `GetFormats` fix (whole `VkSurfaceFormatKHR` entries) applies; not built |
 
 ## Display

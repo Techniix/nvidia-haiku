@@ -8,7 +8,10 @@ driver offers and expects.
 
 - Open driver bug: adding a Screen Capture source hangs the graphics thread
   on a timeline fence (`docs/event-sync.md`, Open issues). No application
-  change is expected for this.
+  change is expected for this. The newest candidate is a lost doorbell on
+  NVK's upload channel; the Mesa `renga` branch fences the submit and
+  recovers a lost doorbell after 3 s with a log line saying so. Not yet run
+  on hardware.
 - OBS's `renga` branch tracks its driver requests as Q-1 to Q-4 in its
   `docs/haiku/RENGA-REQUESTS.md`: Q-1 the hang, Q-2 shared GPU textures,
   Q-3 a hardware encode back end, Q-4 quiet logging.

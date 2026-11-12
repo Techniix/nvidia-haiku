@@ -128,5 +128,12 @@ Reboot after any change to the kernel driver. For NVK, Zink or VideoStreamsWsi c
   2. **The exec channel parked on a semaphore acquire.** OBS renders surfaceless, so Zink adds no GPU waits of its own. The one NVK adds is for its upload queue's timeline, released by the separate `copy` channel.
   3. **Releases of the timeline executed out of order.** A release writes its payload rather than the maximum, so one that runs late can leave the value at 11 after all the work has completed. Zink assigns `batch_id` before taking `queue_lock`, so this needs Zink submitting from several threads, which only happens without its flush thread (`GALLIUM_THREAD=0`, or `ZINK_DEBUG=flushsync`). OBS doesn't set either.
 
-  `0009`'s channel report distinguishes all three. It has been compiled and run against fake channels on Linux (ASan/UBSan); the series applies to the pinned Mesa commit. It is not yet built for Haiku.
+  4. **A lost doorbell.** A submit writes the GPFIFO entry (GART, write-back), USERD `GPPut` (vidmem through BAR1, which RM maps write-combined) and the doorbell (uncached), and had no barrier between them. Write-combined stores may reach the GPU after a later uncached one, so the host can read the old `GPPut` on the doorbell and leave the submission in the ring until the next doorbell. Work on the upload queue's `copy` channel, which submits rarely, could then stay there for good, with the `exec` channel parked on its acquire (cause 2 as the symptom). OBS uploads new shaders when its second display opens. NVIDIA's UVM fences at both points (`mb()` before `GPPut`, `wmb()` before the doorbell), and so does Mesa's amdgpu user-queue path.
+
+  The Mesa `renga` branch now fences both writes (`nvkmd/nvrm: fence the GPPut write and the doorbell`). It also rings every channel with incomplete work again when a CPU wait has stalled for 3 s, and prints `CPU wait completed ... after N doorbells were rung again, which points to a lost doorbell` if that ends the wait. In a log from that build:
+  - no stall: the fences fixed it (or the hang is gone for another reason; run `--no-second-display` to compare);
+  - a stall that ends with the recovery line: doorbells are still being lost despite the fences;
+  - a stall that doesn't end: one of causes 1 to 3, which the channel report below identifies. The report now also prints the `GPPut` this process last wrote (`CPU`) next to USERD's.
+
+  `0009`'s channel report distinguishes causes 1 to 3. It has been compiled and run against fake channels on Linux (ASan/UBSan); the series applies to the pinned Mesa commit. It is not yet built for Haiku.
 - **Upstream.** The kernel string functions, `0007` and the VideoStreamsWsi fix apply to X547's trees too and should be offered there.
