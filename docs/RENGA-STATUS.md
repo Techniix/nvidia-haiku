@@ -80,7 +80,7 @@ about behaviour.
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Renga WSI | Mesa platform syntax-checked; layer not started | `docs/RENGA-WSI.md`. `wsi_common_renga.cpp` on the Mesa `renga` branch: no CPU wait in the application's thread, no shared queue, acquire signalled by the driver. Zero-copy waits on F-47/F-58 |
+| Renga WSI | Layer host-tested, Mesa platform syntax-checked | `docs/RENGA-WSI.md`. Default on this branch; `QUASAR_WSI=videostreams` falls back to VideoStreamsWsi. No CPU wait in the application's thread, no shared queue, acquire signalled by the driver. Zero-copy waits on F-47/F-58 |
 | `VK_EXT_external_memory_host` | Blocked | Needs long-term pinning of user pages (`RENGA-REQUESTS.md`, R-5); `os_lock_user_pages()` refuses cleanly and NVK does not offer the extension |
 | External memory/semaphore sharing between processes | Written (inherited) | NVK shares through RM's export-object-to-fd on an `nvidiactl` descriptor, not dma-buf; needs a test with two processes passing the descriptor |
 | `VK_EXT_memory_budget` | Not started | |

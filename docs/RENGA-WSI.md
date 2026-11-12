@@ -1,7 +1,9 @@
 # Renga WSI: design
 
-Status, 2026-11-11: component 2 (the Mesa platform) is written and
-syntax-checked; components 1 and 3 are not started.
+Status, 2026-11-11: components 1 (the surface layer) and 2 (the Mesa
+platform) are written. The layer passes a host test with a fake driver; the
+Mesa platform is syntax-checked. Neither has run on Renga. Component 3 is not
+started.
 
 The Renga WSI replaces VideoStreamsWsi on the `renga` branch. It is how
 Vulkan applications, and OpenGL applications through Zink, put frames on the
@@ -137,9 +139,14 @@ events.
 
 1. Mesa platform with the bitmap path (component 2). Written; testable
    without the layer by a small program that chains the struct itself.
-2. Surface layer (component 1). Zink, OBS and Eglantine move over unchanged.
+2. Surface layer (component 1). Written, `RengaWsi/`; host test
+   `tests/renga-wsi-layer`. Zink, OBS and Eglantine move over unchanged.
 3. `VK_RENGA_haiku_view_surface`.
-4. Remove VideoStreamsWsi from the `renga` build.
+4. Remove VideoStreamsWsi from the `renga` build. Done as the default:
+   `Build.sh` builds RengaWsi; `QUASAR_WSI=videostreams` (for `Build.sh` and
+   `tools/make-package.sh`) builds and packages VideoStreamsWsi instead, as a
+   fallback while the new path is tested. The submodule stays until the new
+   path has passed on hardware.
 5. Zero-copy, when F-47 and F-58 land.
 
 ## Risks
@@ -147,6 +154,9 @@ events.
 - Mesa's common WSI is new code on Haiku. Step 1 is tested on its own first,
   and VideoStreamsWsi stays installable until step 4.
 - Two layers must not both claim `VK_EXT_headless_surface`. The Quasar
-  package installs one of them; the test script records which is active.
+  package installs one of them; the test script records which is active
+  (`vulkan-layers.txt`). A VideoStreamsWsi left in a home-folder add-ons
+  directory from an earlier manual install would conflict and has to be
+  removed.
 - The private entry point is not a Vulkan extension and is not advertised.
   It exists only between the layer and NVK.

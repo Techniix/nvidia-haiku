@@ -37,3 +37,15 @@ driver offers and expects.
   today. It moves to the Renga WSI once that exists.
 - Driver settings that help only Eglantine go in its per-application
   profile.
+
+## All Vulkan and Zink applications: the Renga WSI
+
+On this branch presentation goes through NVK's swapchains with the RengaWsi
+surface layer instead of VideoStreamsWsi (`docs/RENGA-WSI.md`). Applications
+need no change: `vkCreateHeadlessSurfaceEXT` plus a cast to
+`VKLayerSurfaceBase` and `SetBitmapHook()` work as before. Differences an
+application may notice:
+
+- only `VK_FORMAT_B8G8R8A8_UNORM` and `_SRGB` are offered on such surfaces;
+- `currentExtent` is the window's size from the hook;
+- `RENGA_WSI_DEBUG=1` prints surface and swapchain creation.
