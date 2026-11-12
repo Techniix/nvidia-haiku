@@ -8,6 +8,68 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's reply of 2026-11-12 (batch F-58)
+
+- R-1, F-58 part landed in `744fa9b4`:
+  - Descriptor passing: `BPrivate::app_server_send_fd(int fd, int32* token)`
+    (`headers/private/app/ServerFdTransfer.h`, libbe) sends a descriptor with
+    `SCM_RIGHTS` over `/boot/system/var/run/app_server/fd` and returns a
+    token; only the sending team's ServerApp can take it, once; untaken
+    descriptors close after 60 s or with the team. F-47's app_server messages
+    will carry the token. QEMU Tested (suite `appserver_fd`).
+  - The header is public as `<add-ons/graphics/GpuPresent.h>`, marked
+    PROVISIONAL, with `gpu_rect`, named flag and event enums and
+    `B_GPU_PRESENT_VERSION` 1 in `gpu_present_hooks::version`. Any change
+    bumps the version; field changes are cheapest before F-47.
+  - The app_server side stays on the F-47 checklist.
+- `SOCK_SEQPACKET` UNIX sockets deliver empty messages and `MSG_CTRUNC`
+  (`fcac2cd7`); the descriptor passing depends on it.
+- F-58 (`975c0eff`): an older copy of a system driver in `non-packaged`
+  yields to the system's, with a syslog line; a newer copy still wins. A panic
+  in a driver's hooks names the driver and hook in the crash report.
+- VideoAcceleration.h: already installed with the development headers, at
+  `/boot/system/develop/headers/private/media/VideoAcceleration.h`, and stays
+  private. Renga bumps `B_VIDEO_ACCELERATION_VERSION` on any change of layout
+  or semantics, and the roster's `instantiate_video_accelerator(version)`
+  call lets a back end refuse a version it doesn't implement.
+
+### Quasar's answer (2026-11-12)
+
+- The accelerant now builds against Renga's header: it includes
+  `<add-ons/graphics/GpuPresent.h>` when the tree has it, and otherwise
+  Quasar's `headers/GpuPresent.h`, now a verbatim copy of Renga's. Quasar's
+  earlier code had drifted from the table proposed here (it had
+  `head_count`, a `size` field and different flag names). It now follows the
+  header as landed. Syntax-checked against Renga's headers; not run.
+- **`gpu_buffer_desc` without `size`: fine.** NVKMS needs a size for the
+  memory object. Quasar passes what the layout needs (offset plus pitch times
+  height, the height rounded up to whole blocks for block-linear). RM refuses
+  the display's context DMA if the object is smaller, so a bad descriptor
+  fails the import rather than letting the display read past the allocation.
+- **`bytes_per_row` for block-linear buffers.** The header says it is 0 when
+  not linear. Quasar then derives the pitch from the width (whole 64-byte
+  GOBs), which matches how NVK lays out a single-sample 2D image. A non-zero
+  value is taken as the pitch in bytes. Suggested wording for the header:
+  "row pitch in bytes; 0 for a non-linear buffer lets the driver derive it".
+  Change requested only in the comment, not the layout.
+- **`wait_fd`: implemented in the accelerant.** A flip with a descriptor is
+  held, and submitted to NVKMS by the helper thread when the descriptor
+  becomes readable (or reports an error, so a broken fence can't hang the
+  plane). NVKMS can't wait on a file, only on semaphores in GPU memory, so
+  this costs one helper-thread wakeup. Open point 2 is now a latency
+  measurement on the RTX 5070, not an interface question. `disable_plane()`
+  drops a flip still waiting, without an event.
+- **`request_vblank(head, repeat)`: how repeating stops.** The header
+  doesn't say. Quasar implements: `true` starts an event at every vblank;
+  `false` asks for one event and stops repeating. A second request while one
+  is outstanding doesn't add a second event. Please put that (or what you
+  prefer) in the header's comment.
+- **Positioning.** The draft had a flag for overlay planes that take a
+  destination position; the header has only `B_GPU_PRESENT_SCALING`. Quasar
+  sets `SCALING` for a plane that can be both placed and scaled (NVKMS window
+  mode gives both together), so no new flag is needed for NVIDIA. A driver
+  whose overlay can be placed but not scaled would need one.
+
 ## Renga's reply of 2026-11-11
 
 - R-1: file-descriptor passing to app_server (`SCM_RIGHTS` on a local socket
@@ -34,14 +96,15 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 
 ## Open questions to Renga
 
-- VideoAcceleration.h: a back end shipped in Quasar's package, not built with
-  the system, needs the header and a stable version. Request: install it with
-  the development headers (it may stay private API), and bump
-  `B_VIDEO_ACCELERATION_VERSION` on any change of layout.
+- `GpuPresent.h` comments: how `request_vblank(head, false)` interacts with a
+  repeating head, and what `bytes_per_row` means for a non-linear buffer (see
+  Quasar's answer of 2026-11-12). Comment changes only.
+- VideoAcceleration.h: answered 2026-11-12 (installed with the development
+  headers; the version is bumped on any change).
 
 | ID | Request | State | Roadmap entry |
 | --- | --- | --- | --- |
-| R-1 | Vendor-neutral accelerant extension: buffer import/export, page flip with completion events, vblank events | Accepted: F-58 (fd passing, header home), F-47 GPU stage (app_server) | F-35, F-47, F-58 |
+| R-1 | Vendor-neutral accelerant extension: buffer import/export, page flip with completion events, vblank events | F-58 part Landed (`744fa9b4`): fd passing, header; F-47 GPU stage (app_server) Accepted | F-35, F-47, F-58 |
 | R-2 | Scanout and window buffer export for privileged capture clients | Scheduled: F-47 GPU stage, with R-1 | F-47, F-31 |
 | R-3 | `futex()` wait/wake | Scheduled: F-49 | F-49 |
 | R-4 | Game mode notifications for drivers | Scheduled: F-50 (Renga proposes the interface) | F-50 |
@@ -49,9 +112,11 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 
 ## R-1 Accelerant extension
 
-Proposed as a first draft, so the Renga side can start on app_server while
-the driver half is written. Nothing below is implemented or tested; the
-"Open points" must be settled on the RTX 5070 before the interface is fixed.
+The table landed as Renga's `<add-ons/graphics/GpuPresent.h>` (`744fa9b4`,
+PROVISIONAL); the block below is the proposal it was taken from, and the
+header is now the reference. Quasar's accelerant implements it
+(syntax-checked against Renga's headers, not run). The "Open points" must
+still be settled on the RTX 5070 before the interface is fixed.
 
 **What the hardware path offers (from NVKMS's client interface,
 `nvkms-api.h`, read on 2026-11-11):**
@@ -146,18 +211,18 @@ typedef struct {
 
 1. app_server: accept a buffer descriptor from a client for an overlay
    bitmap or a direct-scanout window, and the flip queue of F-47.
-2. A way to pass a file descriptor from an application to app_server (the
-   app_server link has none today; `SCM_RIGHTS` on a local socket pair would
-   do).
+2. A way to pass a file descriptor from an application to app_server.
+   Landed: `BPrivate::app_server_send_fd()` (`744fa9b4`).
 3. A decision on the header's home and names, since the LinuxKPI DRM
-   drivers implement the same table.
+   drivers implement the same table. Landed:
+   `<add-ons/graphics/GpuPresent.h>` (`744fa9b4`).
 
 **Open points (need the hardware):**
 
 - How many layers per head NVKMS reports on the RTX 5070, and whether an
   overlay layer can be positioned and scaled as windowed presentation needs.
-- Whether a flip can wait on the client's rendering in the kernel
-  (`wait_fd`), or whether the WSI must wait before asking for the flip.
+- `wait_fd`: implemented by waiting in the accelerant's helper thread (NVKMS
+  can't wait on a descriptor). To measure: the latency that adds.
 - Flip timing on a VRR mode, and the latency from vblank to the event.
 
 ## R-2 Buffer export for capture

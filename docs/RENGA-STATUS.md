@@ -47,7 +47,7 @@ about behaviour.
 | `registry_dwords` driver setting (RM registry values without a rebuild) | Syntax-checked | |
 | NVK: routine notices only with `NVK_NVRM_DEBUG` | Host tests pass | `RM reports SM version`, `deferring reuse of a sync slot` |
 | `tools/renga-test.sh`: build, install, run tests, collect one report archive | Smoke-tested on Linux | Timeout and collection paths only |
-| GPU presentation interface, driver half (R-1) | Syntax-checked | Header compiles as C and C++; events on one eventfd; see Display |
+| GPU presentation interface, driver half (R-1) | Syntax-checked | Follows Renga's `<add-ons/graphics/GpuPresent.h>` (`744fa9b4`); `wait_fd` and repeating vblank events implemented; events on one eventfd; see Display |
 | `nvkms_get_per_open_data()` (second-descriptor NVKMS ioctls) | Syntax-checked | Was `return NULL` |
 | NVK: fence the USERD `GPPut` write and the doorbell; ring stalled channels again and report it | Written | Candidate for the OBS hang; not compiled outside Haiku (needs the full Mesa build) |
 | RM caching type `UNCACHED_WEAK` maps uncached, not write-back | Syntax-checked | `to_haiku_cache_type()` fell through to 0 for it; unknown types now map uncached with a log line |
