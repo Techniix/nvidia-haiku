@@ -74,6 +74,18 @@ if ! python3 -c 'import pyexpat' 2>/dev/null; then
 	exit 1
 fi
 
+# Development libraries Mesa links against. pkg-config can find a library's
+# .pc file from its runtime package while the libX.so link file is only in
+# the _devel package; the first Renga build failed that way on zstd
+# ("cannot find -lzstd" linking mesa_clc). Checked by the link file.
+for lib in zstd z expat; do
+	found=0
+	for d in /boot/system/develop/lib /boot/home/config/develop/lib; do
+		[ -e "$d/lib$lib.so" ] && found=1
+	done
+	[ $found = 1 ] || missing+=("devel:lib$lib")
+done
+
 pyMissing=()
 python3 -c 'import mako' 2>/dev/null || pyMissing+=(mako)
 python3 -c 'import yaml' 2>/dev/null || pyMissing+=(pyyaml)
@@ -87,7 +99,7 @@ git -C "$base" submodule status 2>/dev/null | grep -q '^-' && submodulesOk=0
 glvndOk=0; [ -e "$deps/lib/pkgconfig/libglvnd.pc" ] && glvndOk=1
 clcOk=0; [ -e "$deps/share/pkgconfig/libclc.pc" ] && clcOk=1
 
-echo "Build tools:      ${missing[*]:-all present}"
+echo "Build tools and development libraries: ${missing[*]:-all present}"
 echo "Python modules:   ${pyMissing[*]:-all present}"
 echo "LLVM and clang:   $([ $llvmOk = 1 ] && llvm-config --version || echo missing)"
 echo "Submodules:       $([ $submodulesOk = 1 ] && echo checked out || echo not all checked out)"
