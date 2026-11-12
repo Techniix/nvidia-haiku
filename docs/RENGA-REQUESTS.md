@@ -231,3 +231,14 @@ application exit.
 
 **Until then:** the allocation fails with `NV_ERR_NOT_SUPPORTED`, logged once,
 and NVK does not advertise the extension.
+
+## Upstream header bug: `user_fd_kernel_ioctl()`
+
+Not a request, a note for whoever touches it. `headers/private/kernel/fs/fd.h`
+declares `user_fd_kernel_ioctl(int, ulong, void*, size_t)` inside
+`extern "C"`, but `src/system/kernel/fs/fd.cpp` defines it in C++ with
+`uint32 op`, which is a different, C++-mangled symbol. Code that uses the
+header links against nothing. Quasar declares the C++ form itself
+(`BaseDevice.cpp`, `KmsDevice.cpp`). If the definition is fixed to match the
+header (C linkage), Quasar's two declarations must change in the same step,
+or Quasar stops linking. The same mismatch is likely in stock Haiku.

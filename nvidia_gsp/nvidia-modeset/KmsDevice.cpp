@@ -7,8 +7,17 @@
 #include <AutoDeleter.h>
 #include <util/AutoLock.h>
 
-#include <fs/fd.h>
 #include <fs/select_sync_pool.h>
+
+// Not from <fs/fd.h>: that header declares this function extern "C" with an
+// "ulong op", but the kernel defines it in C++ with "uint32 op"
+// (src/system/kernel/fs/fd.cpp), so the only symbol the kernel exports is
+// the C++ one for (int, unsigned int, void*, size_t). Using the header
+// compiles and then fails to link ("undefined reference to
+// user_fd_kernel_ioctl"), as the first Renga build did. BaseDevice.cpp
+// declares it the same way.
+extern status_t user_fd_kernel_ioctl(int fd, unsigned op, void *buffer,
+	size_t length);
 
 #include "KmsDriver.h"
 
