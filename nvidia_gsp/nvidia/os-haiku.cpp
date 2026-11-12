@@ -395,18 +395,34 @@ const char *nv_cache_type_str(NvU32 cache_type)
 	}
 }
 
+// RM's caching type to a Haiku memory type. 0 leaves the default, which is
+// write-back for RAM.
+//
+// NV_MEMORY_UNCACHED_WEAK is x86's UC-: uncached, but a WC MTRR may make it
+// write-combined. Haiku has no UC-, and before this function knew the value it
+// fell through to 0, which made such a mapping write-back. On device memory
+// that leaves CPU writes in the cache and serves reads from stale cache lines,
+// since the device doesn't snoop. Plain uncached is what UC- becomes without a
+// WC MTRR, and is always correct, so use it.
 uint32 to_haiku_cache_type(NvU32 cache_type)
 {
 	uint32 haikuCacheType = 0;
 	switch (cache_type) {
 		case NV_MEMORY_CACHED:
+		case NV_MEMORY_WRITEBACK:
 			haikuCacheType |= 0;
 			break;
 		case NV_MEMORY_WRITECOMBINED:
 			haikuCacheType |= B_WRITE_COMBINING_MEMORY;
 			break;
 		case NV_MEMORY_UNCACHED:
+		case NV_MEMORY_UNCACHED_WEAK:
 		case NV_MEMORY_DEFAULT:
+			haikuCacheType |= B_UNCACHED_MEMORY;
+			break;
+		default:
+			dprintf("nvidia_gsp: unknown RM caching type %" B_PRIu32
+				", mapping uncached\n", cache_type);
 			haikuCacheType |= B_UNCACHED_MEMORY;
 			break;
 	}
