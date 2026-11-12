@@ -59,6 +59,21 @@ for t in "${tools[@]}"; do
 	have "$1" || missing+=("$2")
 done
 
+# Python's XML parser: Mesa's and libglvnd's generators parse the Khronos
+# XML registries with xml.etree, which needs pyexpat. If the python3
+# package was built against a newer libexpat than the one installed,
+# pyexpat fails with "Symbol not found" and every generator step of the
+# build fails. Check it before anything else.
+if ! python3 -c 'import pyexpat' 2>/dev/null; then
+	echo "Python cannot load its XML parser (pyexpat):"
+	python3 -c 'import pyexpat' 2>&1 | tail -1 | sed 's/^/  /'
+	echo "The installed libexpat is probably older than the one python3 was"
+	echo "built with. Try: pkgman update expat"
+	echo "If expat is already the newest available, the OS image needs a newer"
+	echo "expat (or a python3 built against the one it has)."
+	exit 1
+fi
+
 pyMissing=()
 python3 -c 'import mako' 2>/dev/null || pyMissing+=(mako)
 python3 -c 'import yaml' 2>/dev/null || pyMissing+=(pyyaml)
