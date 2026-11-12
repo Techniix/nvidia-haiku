@@ -15,6 +15,13 @@ dep_nvkms_common = dependency('nvkms-common')
 dep_be = cpp.find_library('be')
 # eventfd() for presentation events (NvPresent.cpp); Renga's libgnu.
 dep_gnu = cpp.find_library('gnu')
+# libgnu's headers (sys/eventfd.h) are in develop/headers/gnu, which GCC on
+# Renga does not search by default (Renga's 3rdparty/ce/PORTING.md).
+gnu_headers = '/boot/system/develop/headers/gnu'
+dep_gnu = declare_dependency(
+	dependencies: dep_gnu,
+	compile_args: ['-isystem', gnu_headers],
+)
 
 subdir('common')
 
