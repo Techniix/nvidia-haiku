@@ -102,10 +102,19 @@ sed -E 's#"library_path": *"[^"]*"#"library_path": "./libvulkan_nouveau.so"#' "$
 	> "$stage/add-ons/vulkan/icd.d/$(basename "$icd")"
 note "NVK"
 
-for f in VideoStreamsWsi.so VideoStreamsWsi.json; do
-	put "$src/add-ons/vulkan/implicit_layer.d/$f" "add-ons/vulkan/implicit_layer.d/$f"
+# One window-system layer: RengaWsi, or VideoStreamsWsi when Build.sh was
+# run with QUASAR_WSI=videostreams. Never both (they claim the same entry
+# points). A stale build of the other one in $src is ignored.
+layerDir="$src/add-ons/vulkan/implicit_layer.d"
+if [ "${QUASAR_WSI:-renga}" = videostreams ]; then
+	wsiLayer=VideoStreamsWsi
+else
+	wsiLayer=RengaWsi
+fi
+for f in "$wsiLayer.so" "$wsiLayer.json"; do
+	put "$layerDir/$f" "add-ons/vulkan/implicit_layer.d/$f"
 done
-note "Vulkan window-system layer"
+note "Vulkan window-system layer ($wsiLayer)"
 
 if [ -e "$src/apps/Nebula/ModesetTool" ]; then
 	put "$src/apps/Nebula/ModesetTool" apps/Quasar/ModesetTool

@@ -1,0 +1,17 @@
+{
+	"file_format_version" : "1.1.2",
+	"layer" : {
+		"name": "VK_LAYER_RENGA_window_system",
+		"type": "GLOBAL",
+		"library_path": "./RengaWsi.so",
+		"api_version": "1.4.0",
+		"implementation_version": "1",
+		"description": "Renga window-system surfaces for Quasar (swapchains are in the driver)",
+		"functions": {
+			"vkNegotiateLoaderLayerInterfaceVersion": "RengaWsi_NegotiateLoaderLayerInterfaceVersion"
+		},
+		"disable_environment": {
+			"DISABLE_RENGA_WSI_LAYER": "1"
+		}
+	}
+}

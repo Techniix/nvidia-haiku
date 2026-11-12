@@ -130,8 +130,17 @@ if ! hasPthreadMacro PTHREAD_RECURSIVE_MUTEX_INITIALIZER &&
 		hasPthreadMacro PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP; then
 	vswArgs+=(-Dcpp_args=-DPTHREAD_RECURSIVE_MUTEX_INITIALIZER=PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP)
 fi
-applyPatches VideoStreamsWsi
-buildProject VideoStreamsWsi "${vswArgs[@]}"
+# Window-system layer. On this branch swapchains are in NVK (Mesa's
+# wsi_common_renga.cpp) and RengaWsi only keeps surface objects; see
+# docs/RENGA-WSI.md. QUASAR_WSI=videostreams builds the old VideoStreamsWsi
+# layer instead, as a fallback while the new path is being tested. Only one
+# of the two may be installed: both claim vkCreateHeadlessSurfaceEXT.
+if [ "${QUASAR_WSI:-renga}" = videostreams ]; then
+	applyPatches VideoStreamsWsi
+	buildProject VideoStreamsWsi "${vswArgs[@]}"
+else
+	buildProject RengaWsi
+fi
 
 # libclc and SPIRV-LLVM-Translator are not in HaikuPorts; tools/build-clc-deps.sh
 # builds them here. The /boot/data/packages paths are the original author's.

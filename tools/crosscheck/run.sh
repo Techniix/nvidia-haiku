@@ -66,6 +66,7 @@ check() { # kind file
 	case "$kind" in
 		kernel)  cmd+=("${kernel[@]}" "${nvinc[@]}" -I"$root/nvidia_gsp") ;;
 		modeset) cmd+=("${kernel[@]}" "${nvinc[@]}" "${kmsinc[@]}" -I"$root/nvidia_gsp") ;;
+		vulkan)  cmd+=(-I"${VULKAN_HEADERS:-$root/mesa-nvk/include}" -Wall -Wextra) ;;
 		user)    cmd+=("${nvinc[@]}" "${kmsinc[@]}" -I"$root/nvrm_cpp_sdk"
 		               -I"$root/accelerant" -I"$root/headers" -I"$H/private/graphics/common"
 		               -I"$H/private/shared" -I"$H/private/interface"
@@ -84,6 +85,7 @@ if [ $# -gt 0 ]; then
 		case "$f" in
 			*nvidia-modeset*) check modeset "$(realpath "$f")" ;;
 			*nvidia_gsp*)     check kernel "$(realpath "$f")" ;;
+			*RengaWsi*)       check vulkan "$(realpath "$f")" ;;
 			*)                check user "$(realpath "$f")" ;;
 		esac
 	done
@@ -93,6 +95,7 @@ else
 		check kernel "$f"
 	done
 	for f in "$root"/nvidia_gsp/nvidia-modeset/*.cpp; do check modeset "$f"; done
+	for f in "$root"/RengaWsi/*.cpp; do check vulkan "$f"; done
 	for f in "$root"/nvrm_cpp_sdk/*.cpp "$root"/accelerant/Accelerant.cpp \
 			"$root"/accelerant/NvUtils.cpp "$root"/accelerant/NvKmsBitmap.cpp \
 			"$root"/accelerant/NvPresent.cpp \

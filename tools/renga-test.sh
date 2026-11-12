@@ -116,6 +116,7 @@ collect_state() {
 	capture listdev listdev
 	capture packages sh -c 'pkgman search -i -a 2>/dev/null | grep -iE "quasar|nebula|mesa|vulkan|glvnd|llvm|libclc"'
 	capture images-nouveau sh -c 'listimage 2>/dev/null | grep -iE "nouveau|nvidia|zink|VideoStreams|libvulkan|libEGL"'
+	capture vulkan-layers sh -c 'ls -l /boot/system/add-ons/vulkan/implicit_layer.d /boot/home/config/add-ons/vulkan/implicit_layer.d /boot/system/non-packaged/add-ons/vulkan/implicit_layer.d /boot/home/config/non-packaged/add-ons/vulkan/implicit_layer.d 2>&1'
 	capture vulkan-env sh -c 'env | grep -iE "^(VK_|MESA_|NVK_|ZINK_|GALLIUM_|LIBGL|EGL_)"; echo "--- icd.d"; ls -l /boot/system/add-ons/vulkan/icd.d /boot/home/config/add-ons/vulkan/icd.d /boot/system/non-packaged/add-ons/vulkan/icd.d /boot/home/config/non-packaged/add-ons/vulkan/icd.d 2>&1'
 
 	# Driver lines from this boot and the previous one. grep -a: the syslog can
@@ -196,6 +197,7 @@ do_build() {
 	say "Host tests (no GPU needed)"
 	step host-sync-pool 300 "$base/tests/sync-pool/run.sh"
 	step host-chan-report 300 "$base/tests/chan-report/run.sh"
+	step host-renga-wsi-layer 300 "$base/tests/renga-wsi-layer/run.sh"
 
 	say "Making the package"
 	local pkgArgs=()
@@ -229,7 +231,7 @@ do_build() {
 probe_matrix() {
 	local name=$1 limit=$2
 	shift 2
-	NVK_NVRM_DEBUG=1 step "$name" "$limit" "$@"
+	RENGA_WSI_DEBUG=1 NVK_NVRM_DEBUG=1 step "$name" "$limit" "$@"
 	local status=$?
 	[ $status -eq 0 ] && return 0
 	# The default run failed or hung. The same test under settings that
@@ -319,7 +321,7 @@ do_run() {
 		echo "  2. Wait until it freezes, or one minute if it keeps working."
 		echo "  3. Come back to this Terminal and press Enter."
 		echo "------------------------------------------------------------------"
-		( cd "$obsDir" && OBS_HAIKU_GL=egl OBS_HAIKU_GL_WATCHDOG=0 NVK_NVRM_DEBUG=1 \
+		( cd "$obsDir" && OBS_HAIKU_GL=egl OBS_HAIKU_GL_WATCHDOG=0 NVK_NVRM_DEBUG=1 RENGA_WSI_DEBUG=1 \
 			./obs --verbose >"$report/obs-run.txt" 2>&1 ) &
 		local obsShell=$!
 		sleep 20
