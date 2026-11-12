@@ -15,7 +15,23 @@
 #include <poll.h>
 #include <string.h>
 #include <unistd.h>
+// Renga's eventfd() is in libgnu, with its header in develop/headers/gnu.
+// If the include path misses that directory, declare what is used here
+// rather than fail: the declarations are Renga's (headers/compatibility/
+// gnu/sys/eventfd.h) and the functions come from libgnu at link time.
+#if __has_include(<sys/eventfd.h>)
 #include <sys/eventfd.h>
+#else
+#include <stdint.h>
+typedef uint64_t eventfd_t;
+#define EFD_CLOEXEC		O_CLOEXEC
+#define EFD_NONBLOCK	O_NONBLOCK
+extern "C" {
+int eventfd(unsigned int initialValue, int flags);
+int eventfd_read(int fd, eventfd_t *value);
+int eventfd_write(int fd, eventfd_t value);
+}
+#endif
 
 #include <ErrorUtils.h>
 

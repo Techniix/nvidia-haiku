@@ -18,9 +18,11 @@ dep_gnu = cpp.find_library('gnu')
 # libgnu's headers (sys/eventfd.h) are in develop/headers/gnu, which GCC on
 # Renga does not search by default (Renga's 3rdparty/ce/PORTING.md).
 gnu_headers = '/boot/system/develop/headers/gnu'
+# (A compile_args pair "-isystem <dir>" was dropped by meson on Renga; an
+# include_directories object is passed through.)
 dep_gnu = declare_dependency(
 	dependencies: dep_gnu,
-	compile_args: ['-isystem', gnu_headers],
+	include_directories: include_directories(gnu_headers, is_system: true),
 )
 
 subdir('common')
