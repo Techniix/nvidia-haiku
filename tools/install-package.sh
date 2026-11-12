@@ -16,7 +16,14 @@
 #   3. Installs quasar into your home packages (pkgman install --home), which
 #      also fetches any libraries it needs. If that fails, nebula is put back.
 #
-# Undo with tools/uninstall-package.sh --restore-nebula.
+#   4. Keeps a copy of the quasar package it replaces (for example a build of
+#      another branch), so tools/uninstall-package.sh --restore-previous can
+#      put it back.
+#   5. Warns about Vulkan drivers and window-system layers that would load
+#      next to quasar's.
+#
+# Undo with tools/uninstall-package.sh --restore-previous (the quasar that
+# was installed before) or --restore-nebula.
 set -euo pipefail
 
 mode=install; assumeYes=0; allowNoGL=0; hpkg=""
@@ -104,7 +111,19 @@ if [ -n "$nebula" ]; then
 	if [ $nebulaHome = 1 ]; then pkgman uninstall -H -y nebula; else pkgman uninstall -y nebula; fi
 fi
 
-# 3. quasar.
+# 3. quasar. The one installed now is kept first, unless it is this very
+# file: going back to a known-good build must always be one command.
+if [ -n "$installedQuasar" ] && ! cmp -s "$installedQuasar" "$hpkg"; then
+	keepPrev="$userHome/nvidia-haiku-backups/quasar-previous"
+	mkdir -p "$keepPrev"
+	rm -f "$keepPrev"/quasar-*.hpkg
+	cp "$installedQuasar" "$keepPrev/"
+	case "$installedQuasar" in "$userPackages"/*) prevHome=1 ;; *) prevHome=0 ;; esac
+	{ echo "previous=$keepPrev/$(basename "$installedQuasar")"; echo "previous_home=$prevHome"; } \
+		> "$state/previous-quasar.info"
+	echo "Kept a copy of $(basename "$installedQuasar") in $keepPrev."
+	echo "  To go back to it: tools/uninstall-package.sh --restore-previous"
+fi
 if [ -n "$installedQuasar" ]; then
 	case "$installedQuasar" in
 		"$userPackages"/*) pkgman uninstall -H -y quasar ;;
@@ -151,6 +170,37 @@ else
 	echo "  Apps may load two NVKs, or the wrong one. Move these aside (or run"
 	echo "  tools/install.sh --clean-only), then reboot."
 fi
+# Window-system layers: exactly one of RengaWsi or VideoStreamsWsi may be
+# active, and it must be the package's. A layer left elsewhere (an earlier
+# manual install, a nebula remnant) would claim vkCreateHeadlessSurfaceEXT
+# too.
+echo
+echo "Checking Vulkan window-system layers..."
+ourLayers="$configDir/add-ons/vulkan/implicit_layer.d"
+layerStrays=()
+for base in "$(finddir B_SYSTEM_DIRECTORY)" "$(finddir B_SYSTEM_NONPACKAGED_DIRECTORY)" \
+		"$configDir" "$(finddir B_USER_NONPACKAGED_DIRECTORY)"; do
+	for f in "$base"/add-ons/vulkan/implicit_layer.d/VideoStreamsWsi* \
+			"$base"/add-ons/vulkan/implicit_layer.d/RengaWsi*; do
+		[ -e "$f" ] || continue
+		case "$f" in "$ourLayers"/*) continue ;; esac
+		layerStrays+=("$f")
+	done
+done
+# (|| true: with set -o pipefail, ls failing on an absent file would end the
+# script here.)
+ourCount="$( (ls "$ourLayers"/RengaWsi.json "$ourLayers"/VideoStreamsWsi.json 2>/dev/null || true) | wc -l)"
+if [ ${#layerStrays[@]} -eq 0 ] && [ "$ourCount" -le 1 ]; then
+	echo "  one layer, from quasar."
+else
+	for f in "${layerStrays[@]}"; do echo "  WARNING: another window-system layer: $f"; done
+	if [ "$ourCount" -gt 1 ]; then
+		echo "  WARNING: both RengaWsi and VideoStreamsWsi are in $ourLayers"
+	fi
+	echo "  Two layers would both handle Vulkan surfaces. Move the extra files"
+	echo "  aside, then reboot."
+fi
+
 for v in VK_DRIVER_FILES VK_ICD_FILENAMES VK_ADD_DRIVER_FILES; do
 	if [ -n "${!v:-}" ]; then
 		echo "  Note: $v is set in this shell (${!v}); unset it before testing."
@@ -160,5 +210,6 @@ done
 echo
 echo "quasar $version is installed in your home packages."
 echo "Reboot to load the driver."
-echo "If Haiku doesn't reach the desktop: hold Space at boot, choose"
-echo "'Disable user add-ons', then run tools/uninstall-package.sh --restore-nebula."
+echo "If the system doesn't reach the desktop: hold Space at boot, choose"
+echo "'Disable user add-ons', then run tools/uninstall-package.sh --restore-previous"
+echo "(or --restore-nebula if quasar was not installed before)."

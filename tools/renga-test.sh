@@ -1,6 +1,10 @@
 #!/bin/bash
 # One script for a test session on the Renga machine with the RTX 5070.
 #
+#   tools/renga-test.sh setup
+#       Once, on a fresh Renga install: build tools, LLVM and the libraries
+#       NVK and Zink build against (tools/renga-setup.sh).
+#
 #   tools/renga-test.sh build [--revision N]
 #       Update the submodules, build everything, make the quasar package and
 #       install it. Turns on the driver's verbose log for the test session.
@@ -170,6 +174,13 @@ do_build() {
 	mkdir -p "$report"
 	cd "$base" || exit 1
 
+	if ! "$here/renga-setup.sh" --check >"$report/setup-check.txt" 2>&1; then
+		cat "$report/setup-check.txt"
+		echo
+		echo "Missing build prerequisites. Run: tools/renga-test.sh setup"
+		exit 1
+	fi
+
 	say "Updating submodules"
 	git submodule sync >"$report/build-submodules.txt" 2>&1
 	if ! git submodule update --init >>"$report/build-submodules.txt" 2>&1; then
@@ -223,7 +234,8 @@ do_build() {
 	echo
 	echo "Now reboot, then run: tools/renga-test.sh run"
 	echo "If Renga does not reach the desktop: hold Space at boot, choose"
-	echo "\"Disable user add-ons\", then run tools/uninstall-package.sh."
+	echo "\"Disable user add-ons\", then run tools/uninstall-package.sh --restore-previous"
+	echo "(or --restore-nebula if no quasar was installed before)."
 }
 
 # Run one configuration of a test binary. Each run gets the stall reports
@@ -354,6 +366,7 @@ do_run() {
 }
 
 case "$cmd" in
+	setup)   exec "$here/renga-setup.sh" "$@" ;;
 	build)   do_build "$@" ;;
 	run)     do_run "$@" ;;
 	collect) collect_state; pack_report ;;
