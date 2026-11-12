@@ -6,6 +6,11 @@ cpp = meson.get_compiler('cpp')
 
 dep_nvrm_client_cpp = dependency('nvrm-client-cpp')
 dep_nvkms_client_cpp = dependency('nvkms-client-cpp')
+# nvKmsResetNotifier/nvKmsParseNotifier (NVIDIA's nvkms-sync.c) for flip
+# completion notifiers in NvPresent.cpp. Without it the accelerant still
+# builds (a shared module may leave symbols undefined) and then fails to
+# load in app_server.
+dep_nvkms_common = dependency('nvkms-common')
 
 dep_be = cpp.find_library('be')
 # eventfd() for presentation events (NvPresent.cpp); Renga's libgnu.
@@ -24,9 +29,12 @@ shared_module('nvidia_gsp',
 		dep_nvkms_client_cpp,
 		dep_accelerant_common,
 		dep_gnu,
+		dep_nvkms_common,
 	],
 	name_prefix: '',
 	name_suffix: 'accelerant',
+	# Fail at build time, not when app_server loads the accelerant.
+	link_args: ['-Wl,--no-undefined'],
 	gnu_symbol_visibility: 'hidden',
 	install: true,
 	install_dir: 'add-ons/accelerants',

@@ -12,7 +12,9 @@ add_global_arguments('-Wno-missing-field-initializers', language : 'cpp')
 shared_library('RengaWsi',
 	'RengaWsi.cpp',
 	name_prefix: '',
-	dependencies: [dependency('vulkan')],
+	# Vulkan headers only, from the system include path. A layer must not
+	# link the Vulkan loader: the loader loads the layer.
+	link_args: ['-Wl,--no-undefined'],
 	gnu_symbol_visibility: 'hidden',
 	install_dir: 'add-ons/vulkan/implicit_layer.d',
 	install: true
