@@ -1,6 +1,7 @@
 # Renga WSI: design
 
-Status: design, 2026-11-11. Nothing here is implemented yet.
+Status, 2026-11-11: component 2 (the Mesa platform) is written and
+syntax-checked; components 1 and 3 are not started.
 
 The Renga WSI replaces VideoStreamsWsi on the `renga` branch. It is how
 Vulkan applications, and OpenGL applications through Zink, put frames on the
@@ -84,16 +85,21 @@ file, so no code is taken from it; only the `BitmapHook` and
   marked provisional until it is agreed with X547, as the briefing requires;
   applications should treat it as unstable.
 
-### 2. Haiku platform in Mesa's WSI (`Techniix/mesa`, branch `renga`)
+### 2. Renga platform in Mesa's WSI (`Techniix/mesa`, branch `renga`)
 
-`src/vulkan/wsi/wsi_common_haiku.cpp`, alongside the existing headless
-platform, which it extends:
+`src/vulkan/wsi/wsi_common_renga.cpp`, alongside the existing headless
+platform, which it extends. It is named for Renga, not Haiku: it uses
+Renga-only interfaces and this Mesa branch does not support stock Haiku.
+The build still selects it with `host_machine.system() == 'haiku'`, because
+that is what Renga reports.
 
-- A private device-level entry point,
-  `vkSetSurfaceBitmapHookRENGA(VkDevice-independent, VkSurfaceKHR, void*)`,
-  reached with `vkGetInstanceProcAddr`, records the hook for a headless
-  surface. A headless surface without a hook behaves as today's headless
-  surface.
+- The hook reaches Mesa in the swapchain create info, as a private struct
+  (`wsi_renga_swapchain_bitmap_hook`, sType `0x52474102`) that the layer
+  chains onto `VkSwapchainCreateInfoKHR`. A separate "set hook" entry point
+  would not work: the loader keeps its own surface handles and gives the
+  driver only its private copy, so the layer cannot name the driver's
+  surface. The loader passes `pNext` chains through unchanged. Without the
+  struct a headless swapchain behaves as before.
 - Swapchain images are rendered by the application as usual. With a hook,
   the swapchain uses `WSI_SWAPCHAIN_BUFFER_BLIT`: on present, Mesa's common
   code records a GPU copy into a linear, host-visible buffer as part of the
@@ -129,8 +135,8 @@ events.
 
 ## Order of work
 
-1. Mesa platform with the bitmap path (component 2), behind the private hook
-   entry point. Testable without the layer by a small test program.
+1. Mesa platform with the bitmap path (component 2). Written; testable
+   without the layer by a small program that chains the struct itself.
 2. Surface layer (component 1). Zink, OBS and Eglantine move over unchanged.
 3. `VK_RENGA_haiku_view_surface`.
 4. Remove VideoStreamsWsi from the `renga` build.
