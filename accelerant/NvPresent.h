@@ -37,7 +37,15 @@
 #include <NvKmsDevice.h>
 #include <NvKmsSurface.h>
 
+// Renga installs the interface as <add-ons/graphics/GpuPresent.h> (F-58,
+// 744fa9b4). headers/GpuPresent.h is a verbatim copy of it, for building
+// against a Renga tree from before that commit; both use the same include
+// guard, so only one is ever seen.
+#if __has_include(<add-ons/graphics/GpuPresent.h>)
+#include <add-ons/graphics/GpuPresent.h>
+#else
 #include <GpuPresent.h>
+#endif
 
 
 class NvPresent {
@@ -69,7 +77,7 @@ public:
 	status_t Flip(uint32 head, uint32 plane, uint32 id,
 		const gpu_flip_params *params);
 	status_t DisablePlane(uint32 head, uint32 plane);
-	status_t RequestVblank(uint32 head);
+	status_t RequestVblank(uint32 head, bool repeat);
 	int32 EventFd();
 	status_t NextEvent(gpu_present_event *event);
 	status_t ExportScanout(uint32 head, gpu_buffer_desc *desc);
@@ -87,6 +95,11 @@ private:
 		uint32 pending = 0;		// buffer id of a flip not yet complete
 		uint64 pendingUserData = 0;
 		uint32 nextNotifier = 0;
+		// A flip waiting for its wait_fd: pending is set, the flip is not
+		// yet submitted to NVKMS. waitFd is our duplicate of the caller's
+		// descriptor, closed by the helper thread or DisablePlane().
+		int waitFd = -1;
+		gpu_flip_params waitParams {};
 	};
 
 	void SetUpNotifiers();
@@ -101,6 +114,11 @@ private:
 	PlaneState *Plane(uint32 head, uint32 plane);
 	status_t SubmitFlip(uint32 head, uint32 plane, NvKmsSurfaceHandle surface,
 		const gpu_flip_params *params, bool withNotifier, uint32 notifier);
+	status_t StartFlip(uint32 head, uint32 plane, PlaneState &state,
+		const gpu_flip_params &params);	// fLock held
+	void CompleteFlipNow(uint32 head, uint32 plane, PlaneState &state,
+		uint64 userData);	// fLock held
+	status_t ArmVblank(uint32 head);	// fLock held
 
 	Context fContext;
 	std::mutex fLock;
@@ -127,6 +145,7 @@ private:
 		uint32 head;
 	};
 	std::vector<PendingVblank> fPendingVblanks;	// fLock
+	std::vector<bool> fRepeatVblank;	// per head, fLock
 	std::thread fThread;
 	std::atomic<bool> fQuit {false};
 };

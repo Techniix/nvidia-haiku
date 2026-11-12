@@ -778,9 +778,8 @@ NvHandle NvAccelerant::ScanoutMemory(NvU32 head, gpu_buffer_desc *desc)
 	desc->height = fFramebuffer.Height();
 	desc->bytes_per_row = fFramebuffer.BytesPerRow();
 	desc->format = fFramebuffer.ColorSpace();
-	desc->modifier = B_GPU_MODIFIER_LINEAR;
+	desc->modifier = 0;	// linear
 	desc->offset = 0;
-	desc->size = (fFramebuffer.BitsLength() + B_PAGE_SIZE - 1) / B_PAGE_SIZE * B_PAGE_SIZE;
 	return fFramebuffer.Memory().Get();
 }
 

@@ -1,79 +1,79 @@
 /*
- * GPU presentation through the accelerant: buffer import, page flips with
- * completion events, vblank events and scanout export.
- *
- * PROVISIONAL. This is the interface proposed in Quasar's
- * docs/RENGA-REQUESTS.md (R-1) for Renga's app_server (roadmap F-35/F-47).
- * It is meant to become vendor-neutral and to live in Renga's headers, so
- * that the LinuxKPI DRM drivers implement the same table. Until the Renga
- * side accepts it, the names, the feature code and the structures may change,
- * and B_GPU_PRESENT_VERSION will be bumped when they do.
- *
- * app_server gets the table with
- *     get_accelerant_hook(B_GPU_PRESENT_HOOKS, NULL)
- * which returns a const gpu_present_hooks*, or NULL when the driver has none.
- * Calls are made by the accelerant's owner (app_server), from any thread.
+ * Copyright 2026, Renga contributors.
+ * Distributed under the terms of the MIT License.
  */
 #ifndef _GPU_PRESENT_H
 #define _GPU_PRESENT_H
 
+
+/*!	GPU buffer presentation through the accelerant (Renga, roadmap F-47;
+	request R-1 of the Quasar NVIDIA driver, Techniix/nvidia-haiku,
+	docs/RENGA-REQUESTS.md).
+
+	PROVISIONAL. This is the table the Quasar driver proposed, with the
+	names and the header's home decided (F-58); app_server does not use it
+	yet. The app_server side (GPU buffers in overlay bitmaps, a flip queue,
+	direct scanout) comes with the GPU stage (F-47), after the open points
+	on real hardware are settled. Until then the layout may change; every
+	change bumps B_GPU_PRESENT_VERSION, and an accelerant fills in the
+	version it implements, so app_server can refuse a table it does not
+	know.
+
+	An accelerant offers the table through get_accelerant_hook():
+		gpu_present_hooks* hooks
+			= (gpu_present_hooks*)get_accelerant_hook(B_GPU_PRESENT_HOOKS,
+				NULL);
+	It is called by app_server only (the accelerant's owner).
+
+	Buffers are file descriptors (B_GPU_BUFFER_FD): a driver-specific
+	shareable descriptor, an nvidiactl memory descriptor for Quasar or a
+	dma-buf descriptor for LinuxKPI DRM drivers. An application hands its
+	descriptor to app_server with BPrivate::app_server_send_fd()
+	(headers/private/app/ServerFdTransfer.h, SCM_RIGHTS on a local socket
+	next to the app_server link), and refers to it in app_server messages
+	by the token that returns.
+
+	Events (flip completion, vblank) are queued by the accelerant;
+	event_fd() is readable while any are queued, for select(), poll() and
+	epoll in app_server's own thread.
+*/
+
+
 #include <GraphicsDefs.h>
 #include <OS.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
-#define B_GPU_PRESENT_HOOKS		0x52474100	/* 'RGA\0' */
+// get_accelerant_hook() feature code ('RGA', vendor neutral).
+#define B_GPU_PRESENT_HOOKS		0x52474100
 #define B_GPU_PRESENT_VERSION	1
 
-/* gpu_buffer_desc::handle_type */
+
+// gpu_buffer_desc::handle_type
 enum {
-	B_GPU_BUFFER_FD = 1			/* a file descriptor the driver can import */
+	B_GPU_BUFFER_FD = 1		// handle is a file descriptor
 };
 
-/* gpu_buffer_desc::modifier: 0 is linear (pitch) memory. Other values are the
- * driver's own layout codes; for Quasar they are the DRM format modifiers of
- * NVIDIA block-linear memory, as NVK reports them. */
-#define B_GPU_MODIFIER_LINEAR	0
-
-typedef struct {
-	uint32		handle_type;
-	int32		handle;
-	uint32		width;
-	uint32		height;
-	uint32		bytes_per_row;	/* pitch for linear memory */
-	color_space	format;			/* B_RGB32, B_RGBA32 */
-	uint64		modifier;
-	uint64		offset;			/* of the image in the memory object */
-	uint64		size;			/* of the memory object, bytes */
-} gpu_buffer_desc;
-
-/* gpu_present_caps::flags */
+// gpu_present_caps::flags
 enum {
-	B_GPU_PRESENT_CAN_VRR		= 1 << 0,
-	B_GPU_PRESENT_CAN_TEAR		= 1 << 1,	/* flips not tied to vblank */
-	B_GPU_PRESENT_CAN_SCALE		= 1 << 2,
-	B_GPU_PRESENT_CAN_POSITION	= 1 << 3	/* overlay planes in a window */
+	B_GPU_PRESENT_VRR			= 0x01,	// variable refresh rate
+	B_GPU_PRESENT_ASYNC_FLIP	= 0x02,	// flips without waiting for vblank
+	B_GPU_PRESENT_SCALING		= 0x04	// planes scale source to destination
 };
 
-typedef struct {
-	uint32		planes;			/* per head; plane 0 is the primary */
-	uint32		flags;
-	uint32		max_width;
-	uint32		max_height;
-} gpu_present_caps;
-
-/* gpu_flip_params::flags */
+// gpu_flip_params::flags
 enum {
-	B_GPU_FLIP_ASYNC	= 1 << 0,	/* do not wait for vblank (tearing) */
-	B_GPU_FLIP_VRR		= 1 << 1	/* allow variable refresh */
+	B_GPU_FLIP_VSYNC	= 0x01,
+	B_GPU_FLIP_ASYNC	= 0x02,
+	B_GPU_FLIP_VRR		= 0x04
 };
 
-/* A rectangle in pixels. Plain C and integer, unlike BRect, so drivers in C
- * can implement the table and there is no off-by-one between inclusive and
- * exclusive edges. width or height 0: the whole buffer (source) or the
- * buffer's size at the origin (destination). */
+// gpu_present_event::type
+enum {
+	B_GPU_EVENT_FLIP_COMPLETE	= 1,
+	B_GPU_EVENT_VBLANK			= 2
+};
+
+
 typedef struct {
 	int32		x;
 	int32		y;
@@ -81,62 +81,61 @@ typedef struct {
 	uint32		height;
 } gpu_rect;
 
+
 typedef struct {
-	gpu_rect	source;			/* buffer pixels; must start at 0,0 for now */
-	gpu_rect	destination;	/* screen pixels; ignored for plane 0 */
-	uint32		flags;
-	int32		wait_fd;		/* reserved, must be -1 */
-	uint64		user_data;		/* returned in B_GPU_EVENT_FLIP_COMPLETE */
+	uint32		handle_type;		// B_GPU_BUFFER_FD
+	int			handle;				// driver-specific shareable descriptor
+	uint32		width;
+	uint32		height;
+	uint32		bytes_per_row;		// 0 if not linear
+	color_space	format;
+	uint64		modifier;			// driver tiling/layout, 0 = linear
+	uint64		offset;				// of the image inside the object
+} gpu_buffer_desc;
+
+
+typedef struct {
+	uint32		planes_per_head;	// 1 = primary only
+	uint32		flags;				// B_GPU_PRESENT_*
+	uint32		max_width;
+	uint32		max_height;
+} gpu_present_caps;
+
+
+typedef struct {
+	gpu_rect	source;				// buffer pixels
+	gpu_rect	destination;		// on screen; ignored for the primary plane
+	uint32		flags;				// B_GPU_FLIP_*
+	int			wait_fd;			// -1, or a descriptor that becomes
+									// readable when rendering is complete
+	uint64		user_data;			// returned in the completion event
 } gpu_flip_params;
 
-enum {
-	B_GPU_EVENT_FLIP_COMPLETE	= 1,
-	B_GPU_EVENT_VBLANK			= 2
-};
 
 typedef struct {
-	uint32		type;
+	uint32		type;				// B_GPU_EVENT_*
 	uint32		head;
 	uint32		plane;
-	uint32		_reserved;
 	uint64		user_data;
-	bigtime_t	time;			/* system_time() when the driver saw it */
-	uint64		sequence;
+	bigtime_t	time;				// system_time() of the event
+	uint64		sequence;			// vblank count
 } gpu_present_event;
 
+
 typedef struct {
-	uint32		version;		/* B_GPU_PRESENT_VERSION */
-	uint32		head_count;
-
+	uint32		version;			// B_GPU_PRESENT_VERSION implemented
 	status_t	(*get_caps)(uint32 head, gpu_present_caps* caps);
-
-	/* The descriptor stays owned by the caller. */
 	status_t	(*import_buffer)(const gpu_buffer_desc* desc, uint32* _id);
 	status_t	(*release_buffer)(uint32 id);
-
-	/* Queue a flip. Completion is reported as a B_GPU_EVENT_FLIP_COMPLETE
-	 * with the params' user_data. B_BUSY: a flip on this plane is still
-	 * pending. */
 	status_t	(*flip)(uint32 head, uint32 plane, uint32 id,
 					const gpu_flip_params* params);
 	status_t	(*disable_plane)(uint32 head, uint32 plane);
-
-	/* One B_GPU_EVENT_VBLANK at the next vblank of the head. Call again for
-	 * the following one. */
-	status_t	(*request_vblank)(uint32 head);
-
-	/* Readable while events are queued: select(), poll() and epoll. */
-	int32		(*event_fd)(void);
-	/* B_WOULD_BLOCK when no event is queued. */
+	status_t	(*request_vblank)(uint32 head, bool repeat);
+	int			(*event_fd)(void);
 	status_t	(*next_event)(gpu_present_event* event);
-
-	/* A new descriptor for the memory now shown on a head's primary plane.
-	 * The caller closes desc->handle. For privileged capture (R-2). */
+	// R-2: the current scanout buffer of a head, as a new descriptor.
 	status_t	(*export_scanout)(uint32 head, gpu_buffer_desc* desc);
 } gpu_present_hooks;
 
-#ifdef __cplusplus
-}
-#endif
 
-#endif	/* _GPU_PRESENT_H */
+#endif	// _GPU_PRESENT_H

@@ -73,7 +73,8 @@ static inline status_t ToStatus(const std::system_error &ex)
 
 
 NvPresent::NvPresent(const Context &context):
-	fContext(context)
+	fContext(context),
+	fRepeatVblank(context.headCount, false)
 {
 	try {
 		SetUpNotifiers();
@@ -110,6 +111,10 @@ NvPresent::~NvPresent()
 		fQuit = true;
 		Wake();
 		fThread.join();
+	}
+	for (auto &it : fPlanes) {
+		if (it.second.waitFd >= 0)
+			close(it.second.waitFd);
 	}
 	for (const PendingVblank &pending : fPendingVblanks)
 		close(pending.fd);
@@ -252,17 +257,19 @@ NvPresent::GetCaps(uint32 head, gpu_present_caps *caps)
 
 	const NvKmsAllocDeviceReply &info = fContext.kmsDev->Info();
 	*caps = {};
-	caps->planes = info.numLayers[head];
+	caps->planes_per_head = info.numLayers[head];
 	caps->max_width = info.maxWidthInPixels;
 	caps->max_height = info.maxHeightInPixels;
-	// Scaling and positioning of layers other than the main one need NVKMS
-	// "window mode" (NVDisplay). VRR depends on the monitor and the mode;
+	// Scaling (and placing) layers other than the main one needs NVKMS
+	// "window mode" (NVDisplay). Renga's header has no separate flag for
+	// placing an overlay plane: a plane that takes a destination rectangle
+	// is assumed to be placeable. VRR depends on the monitor and the mode;
 	// the flag says the driver can ask for it.
 	// UNVERIFIED on the RTX 5070: the layer count and window mode support.
-	caps->flags = B_GPU_PRESENT_CAN_VRR | B_GPU_PRESENT_CAN_TEAR;
-	for (uint32 layer = 1; layer < caps->planes; layer++) {
+	caps->flags = B_GPU_PRESENT_VRR | B_GPU_PRESENT_ASYNC_FLIP;
+	for (uint32 layer = 1; layer < caps->planes_per_head; layer++) {
 		if (info.layerCaps[layer].supportsWindowMode) {
-			caps->flags |= B_GPU_PRESENT_CAN_POSITION | B_GPU_PRESENT_CAN_SCALE;
+			caps->flags |= B_GPU_PRESENT_SCALING;
 			break;
 		}
 	}
@@ -275,7 +282,8 @@ NvPresent::ImportBuffer(const gpu_buffer_desc *desc, uint32 *_id)
 {
 	if (desc == nullptr || _id == nullptr
 		|| desc->handle_type != B_GPU_BUFFER_FD || desc->handle < 0
-		|| desc->width == 0 || desc->height == 0 || desc->size == 0)
+		|| desc->width == 0 || desc->height == 0
+		|| desc->width > 0xffff || desc->height > 0xffff)
 		return B_BAD_VALUE;
 
 	NvKmsSurfaceMemoryFormat format;
@@ -295,29 +303,53 @@ NvPresent::ImportBuffer(const gpu_buffer_desc *desc, uint32 *_id)
 	params.request.useFd = true;
 	params.request.planes[0].u.fd = desc->handle;
 	params.request.planes[0].offset = desc->offset;
-	params.request.planes[0].rmObjectSizeInBytes = desc->size;
 	params.request.widthInPixels = desc->width;
 	params.request.heightInPixels = desc->height;
 	params.request.format = format;
 
-	if (desc->modifier == B_GPU_MODIFIER_LINEAR) {
-		if (desc->bytes_per_row == 0 || desc->bytes_per_row % 256 != 0)
-			return B_BAD_VALUE;	// NVKMS requires 256-byte aligned pitch
+	// gpu_buffer_desc has no size of the memory object (Renga dropped it
+	// from the proposal). NVKMS needs one: it checks that the plane fits,
+	// and uses it as the limit of the display's context DMA. Pass what the
+	// layout needs. If the object is smaller than that, RM refuses the
+	// context DMA and the import fails, so a bad descriptor can't make the
+	// display read past the allocation.
+	const uint64 bytesPerPixel = 4;
+	uint64 pitchBytes;
+	uint64 lines = desc->height;
+	if (desc->modifier == 0) {
+		// Linear.
+		pitchBytes = desc->bytes_per_row;
+		if (pitchBytes == 0 || pitchBytes % 256 != 0)
+			return B_BAD_VALUE;	// NVKMS requires a 256-byte aligned pitch
 		params.request.layout = NvKmsSurfaceMemoryLayoutPitch;
-		params.request.planes[0].pitch = desc->bytes_per_row;
+		params.request.planes[0].pitch = pitchBytes;
 	} else if ((desc->modifier >> kModVendorShift) == kModVendorNvidia
 		&& (desc->modifier & 0x10) != 0) {
-		// Block-linear: NVKMS wants the pitch in 64-byte blocks.
-		// UNVERIFIED: that NVK's bytes_per_row for block-linear images is
-		// the row pitch in bytes of whole blocks.
-		if (desc->bytes_per_row == 0 || desc->bytes_per_row % 64 != 0)
+		// Block-linear. NVKMS wants the pitch in 64-byte GOB columns.
+		// Renga's header says bytes_per_row is 0 for non-linear buffers; then
+		// the pitch is the width in bytes rounded up to whole GOBs, which is
+		// how NVK lays out a single-sample 2D image with one GOB per block
+		// in X. A non-zero value is taken as the pitch in bytes.
+		// UNVERIFIED: NVK's pitch for every image it may export.
+		const uint32 log2GobsY = (uint32)(desc->modifier & 0xf);
+		pitchBytes = desc->bytes_per_row != 0 ? desc->bytes_per_row
+			: (desc->width * bytesPerPixel + 63) / 64 * 64;
+		if (pitchBytes % 64 != 0)
 			return B_BAD_VALUE;
 		params.request.layout = NvKmsSurfaceMemoryLayoutBlockLinear;
-		params.request.log2GobsPerBlockY = (NvU32)(desc->modifier & 0xf);
-		params.request.planes[0].pitch = desc->bytes_per_row / 64;
+		params.request.log2GobsPerBlockY = log2GobsY;
+		params.request.planes[0].pitch = pitchBytes / 64;
+		// The last row of blocks is whole even when the image ends inside
+		// it: a block is 8 << log2GobsY lines of GOBs.
+		const uint64 blockLines = 8ull << log2GobsY;
+		lines = (lines + blockLines - 1) / blockLines * blockLines;
 	} else {
 		return B_BAD_VALUE;
 	}
+	if (desc->width * bytesPerPixel > pitchBytes)
+		return B_BAD_VALUE;
+	params.request.planes[0].rmObjectSizeInBytes = desc->offset
+		+ lines * pitchBytes;
 
 	std::lock_guard<std::mutex> lock(fLock);
 	if (fContext.kms->Control(NVKMS_IOCTL_REGISTER_SURFACE, &params,
@@ -427,8 +459,13 @@ status_t
 NvPresent::Flip(uint32 head, uint32 plane, uint32 id,
 	const gpu_flip_params *params)
 {
-	if (params == nullptr || params->wait_fd != -1)
-		return B_BAD_VALUE;	// waiting in the driver is an open point of R-1
+	if (params == nullptr || params->wait_fd < -1)
+		return B_BAD_VALUE;
+	if ((params->flags & ~(B_GPU_FLIP_VSYNC | B_GPU_FLIP_ASYNC
+			| B_GPU_FLIP_VRR)) != 0
+		|| ((params->flags & B_GPU_FLIP_VSYNC) != 0
+			&& (params->flags & B_GPU_FLIP_ASYNC) != 0))
+		return B_BAD_VALUE;
 	if (params->source.width > 0xffff || params->source.height > 0xffff
 		|| params->destination.width > 0xffff
 		|| params->destination.height > 0xffff
@@ -448,38 +485,90 @@ NvPresent::Flip(uint32 head, uint32 plane, uint32 id,
 	if (state->pending != 0)
 		return B_BUSY;	// one flip in flight per plane, as with KMS
 
-	uint32 notifier = state->nextNotifier;
-	if (fHaveNotifiers)
-		ResetNotifier(head, plane, notifier);
-
-	status_t status = SubmitFlip(head, plane, it->second.surface.Get(), params,
-		fHaveNotifiers, notifier);
-	if (status != B_OK)
-		return status;
+	if (params->wait_fd >= 0) {
+		// Wait for rendering in the helper thread, not here: app_server
+		// calls flip() from its own event loop and must not block. Our
+		// duplicate keeps the descriptor valid however the caller uses its
+		// own. NVKMS cannot wait on a descriptor itself (its flips take
+		// semaphores in GPU memory, not files), so the flip goes to NVKMS
+		// once the descriptor is readable. That costs one helper-thread
+		// wakeup of latency, and is the open point "flips waiting on
+		// wait_fd" of R-1: to be measured on the RTX 5070.
+		if (!fThread.joinable())
+			return B_NO_INIT;
+		int fd = fcntl(params->wait_fd, F_DUPFD_CLOEXEC, 0);
+		if (fd < 0)
+			return errno;
+		it->second.useCount++;
+		state->pending = id;
+		state->pendingUserData = params->user_data;
+		state->waitFd = fd;
+		state->waitParams = *params;
+		state->waitParams.wait_fd = -1;
+		Wake();
+		return B_OK;
+	}
 
 	it->second.useCount++;
 	state->pending = id;
 	state->pendingUserData = params->user_data;
-	state->nextNotifier = (notifier + 1) % kNotifiersPerLayer;
+	status_t status = StartFlip(head, plane, *state, *params);
+	if (status != B_OK) {
+		state->pending = 0;
+		DropBufferUse(id);
+	}
+	return status;
+}
+
+
+// Submit the flip of state.pending to NVKMS. If its completion can't be
+// tracked, report it complete now. fLock held.
+status_t
+NvPresent::StartFlip(uint32 head, uint32 plane, PlaneState &state,
+	const gpu_flip_params &params)
+{
+	auto it = fBuffers.find(state.pending);
+	if (it == fBuffers.end())
+		return B_BAD_VALUE;
+
+	uint32 notifier = state.nextNotifier;
+	if (fHaveNotifiers)
+		ResetNotifier(head, plane, notifier);
+
+	status_t status = SubmitFlip(head, plane, it->second.surface.Get(),
+		&params, fHaveNotifiers, notifier);
+	if (status != B_OK)
+		return status;
+	state.nextNotifier = (notifier + 1) % kNotifiersPerLayer;
 
 	if (!fHaveNotifiers || !fEventsDeclared) {
 		// Without notifiers the flip cannot be tracked: report it as
 		// complete now, so the caller does not wait forever. It may tear.
-		gpu_present_event event {};
-		event.type = B_GPU_EVENT_FLIP_COMPLETE;
-		event.head = head;
-		event.plane = plane;
-		event.user_data = params->user_data;
-		event.time = system_time();
-		fEvents.push_back(event);
-		if (state->shown != 0)
-			DropBufferUse(state->shown);
-		state->shown = id;
-		state->pending = 0;
-		if (fSignalFd >= 0)
-			Signal();
+		CompleteFlipNow(head, plane, state, params.user_data);
 	}
 	return B_OK;
+}
+
+
+// Report the pending flip of a plane as complete, and make its buffer the
+// shown one. fLock held.
+void
+NvPresent::CompleteFlipNow(uint32 head, uint32 plane, PlaneState &state,
+	uint64 userData)
+{
+	gpu_present_event event {};
+	event.type = B_GPU_EVENT_FLIP_COMPLETE;
+	event.head = head;
+	event.plane = plane;
+	event.user_data = userData;
+	event.time = system_time();
+	fEvents.push_back(event);
+	if (state.shown != 0)
+		DropBufferUse(state.shown);
+	state.shown = state.pending;
+	state.pending = 0;
+	if (fSignalFd >= 0)
+		Signal();
 }
 
 
@@ -490,6 +579,15 @@ NvPresent::DisablePlane(uint32 head, uint32 plane)
 	PlaneState *state = Plane(head, plane);
 	if (state == nullptr || plane == NVKMS_MAIN_LAYER)
 		return B_BAD_VALUE;	// the main layer always shows a framebuffer
+	if (state->waitFd >= 0) {
+		// A flip still waiting for rendering is dropped without an event:
+		// the caller disabled the plane, so nothing will be shown. The
+		// helper thread may be polling this descriptor; it re-checks the
+		// plane under fLock before using what it polled.
+		close(state->waitFd);
+		state->waitFd = -1;
+		Wake();
+	}
 	status_t status = SubmitFlip(head, plane, 0, nullptr, false, 0);
 	if (status != B_OK)
 		return status;
@@ -507,14 +605,35 @@ NvPresent::DisablePlane(uint32 head, uint32 plane)
 }
 
 
+// repeat true: a B_GPU_EVENT_VBLANK at every vblank of the head from now on.
+// repeat false: one at the next vblank, and stop repeating. Renga's header
+// does not spell out how repeating stops; this is the reading proposed in
+// docs/RENGA-REQUESTS.md (R-1).
 status_t
-NvPresent::RequestVblank(uint32 head)
+NvPresent::RequestVblank(uint32 head, bool repeat)
 {
 	if (head >= fContext.headCount)
 		return B_BAD_VALUE;
 	if (!fThread.joinable())
 		return B_NO_INIT;
 
+	std::lock_guard<std::mutex> lock(fLock);
+	fRepeatVblank[head] = repeat;
+	for (const PendingVblank &it : fPendingVblanks) {
+		if (it.head == head)
+			return B_OK;	// the next one is already requested
+	}
+	status_t status = ArmVblank(head);
+	if (status == B_OK)
+		Wake();
+	return status;
+}
+
+
+// Ask NVKMS for one vblank event on a head. fLock held.
+status_t
+NvPresent::ArmVblank(uint32 head)
+{
 	// A fresh open of the modeset device, used only as the event's target.
 	// It must be opened by this team: the kernel resolves it in the caller's
 	// descriptor table (nvkms_get_per_open_data, KmsDevice.cpp).
@@ -532,12 +651,7 @@ NvPresent::RequestVblank(uint32 head)
 		close(fd);
 		return B_ERROR;
 	}
-
-	{
-		std::lock_guard<std::mutex> lock(fLock);
-		fPendingVblanks.push_back({fd, head});
-	}
-	Wake();
+	fPendingVblanks.push_back({fd, head});
 	return B_OK;
 }
 
@@ -569,17 +683,32 @@ NvPresent::Wake()
 void
 NvPresent::EventThread()
 {
+	struct WaitingFlip {
+		int fd;
+		uint32 head;
+		uint32 plane;
+	};
 	std::vector<pollfd> fds;
 	std::vector<PendingVblank> pending;
+	std::vector<WaitingFlip> waiting;
 	while (!fQuit) {
 		{
 			std::lock_guard<std::mutex> lock(fLock);
 			pending = fPendingVblanks;
+			waiting.clear();
+			for (const auto &it : fPlanes) {
+				if (it.second.waitFd >= 0) {
+					waiting.push_back({it.second.waitFd, it.first.first,
+						it.first.second});
+				}
+			}
 		}
 		fds.clear();
 		fds.push_back({fContext.kms->Fd(), POLLIN, 0});
 		fds.push_back({fWakeFd, POLLIN, 0});
 		for (const PendingVblank &it : pending)
+			fds.push_back({it.fd, POLLIN, 0});
+		for (const WaitingFlip &it : waiting)
 			fds.push_back({it.fd, POLLIN, 0});
 
 		if (poll(fds.data(), fds.size(), -1) < 0) {
@@ -617,6 +746,48 @@ NvPresent::EventThread()
 					break;
 				}
 			}
+			// NVKMS's vblank request is one-shot: re-arm for a repeating
+			// head. The event lands at the following vblank as long as this
+			// runs within a frame of the last one.
+			if (fRepeatVblank[event.head] && ArmVblank(event.head) != B_OK) {
+				debug_printf("[!] NvPresent: could not re-arm vblank events "
+					"on head %" B_PRIu32 "\n", event.head);
+				fRepeatVblank[event.head] = false;
+			}
+		}
+		const size_t waitBase = 2 + pending.size();
+		for (size_t i = 0; i < waiting.size(); i++) {
+			// POLLERR and POLLHUP count as "rendering done": a fence
+			// descriptor that errors will never become readable, and holding
+			// the flip forever would hang the plane. POLLNVAL means
+			// DisablePlane() closed it.
+			if ((fds[waitBase + i].revents & (POLLIN | POLLERR | POLLHUP))
+					== 0)
+				continue;
+			PlaneState *state = Plane(waiting[i].head, waiting[i].plane);
+			if (state == nullptr || state->waitFd != waiting[i].fd)
+				continue;	// cancelled since the poll began
+			close(state->waitFd);
+			state->waitFd = -1;
+			if (StartFlip(waiting[i].head, waiting[i].plane, *state,
+					state->waitParams) != B_OK) {
+				// Report it complete so the caller does not wait forever;
+				// the previous buffer stays on screen.
+				debug_printf("[!] NvPresent: deferred flip on head %" B_PRIu32
+					" plane %" B_PRIu32 " failed\n", waiting[i].head,
+					waiting[i].plane);
+				gpu_present_event done {};
+				done.type = B_GPU_EVENT_FLIP_COMPLETE;
+				done.head = waiting[i].head;
+				done.plane = waiting[i].plane;
+				done.user_data = state->waitParams.user_data;
+				done.time = system_time();
+				fEvents.push_back(done);
+				signal = true;
+				uint32 id = state->pending;
+				state->pending = 0;
+				DropBufferUse(id);
+			}
 		}
 		if (signal)
 			Signal();
@@ -643,8 +814,8 @@ NvPresent::DrainKmsEvents()
 		uint32 head = params.reply.event.u.flipOccurred.head;
 		uint32 plane = params.reply.event.u.flipOccurred.layer;
 		PlaneState *state = Plane(head, plane);
-		if (state == nullptr || state->pending == 0)
-			continue;
+		if (state == nullptr || state->pending == 0 || state->waitFd >= 0)
+			continue;	// nothing of ours on this plane is with NVKMS
 		uint32 notifier = (state->nextNotifier + kNotifiersPerLayer - 1)
 			% kNotifiersPerLayer;
 		if (fHaveNotifiers && !NotifierDone(head, plane, notifier))
@@ -773,12 +944,12 @@ hook_disable_plane(uint32 head, uint32 plane)
 }
 
 static status_t
-hook_request_vblank(uint32 head)
+hook_request_vblank(uint32 head, bool repeat)
 {
-	PRESENT_CALL(sPresent->RequestVblank(head));
+	PRESENT_CALL(sPresent->RequestVblank(head, repeat));
 }
 
-static int32
+static int
 hook_event_fd()
 {
 	return sPresent != nullptr ? sPresent->EventFd() : -1;
@@ -805,7 +976,6 @@ NvPresent::Hooks()
 		return nullptr;
 	sHooks = {
 		.version = B_GPU_PRESENT_VERSION,
-		.head_count = sPresent->fContext.headCount,
 		.get_caps = hook_get_caps,
 		.import_buffer = hook_import_buffer,
 		.release_buffer = hook_release_buffer,
