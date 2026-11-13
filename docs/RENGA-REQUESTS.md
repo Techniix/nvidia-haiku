@@ -343,6 +343,9 @@ and NVK does not advertise the extension.
 
 ## Feature-complete driver: R-6 to R-15 (2026-11-13)
 
+These are designed for Renga only: where Haiku's interfaces fall short,
+the request is to change Renga, not to work around it in the driver.
+
 Priorities: **P1** a desktop driver isn't complete without it; **P2**
 expected of a complete driver; **P3** later. Everything here is provisional
 in the same way as R-1: names and layouts can change until Renga's GPU stage
@@ -359,9 +362,10 @@ interface to app_server and app_server's side.
 
 ### R-6 Several displays and hot-plug (P1)
 
-**Driver side (Quasar):** one accelerant drives every connector of the GPU;
-the legacy hooks keep driving the first display, so a stock app_server
-still works. A new table describes connectors and sets all displays at once:
+**Driver side (Quasar):** one accelerant drives every connector of the GPU.
+This replaces the single-display mode hooks for Renga's app_server; nothing
+here needs to stay compatible with stock Haiku's. A new table describes
+connectors and sets all displays at once:
 
 ```c
 #define B_GET_DISPLAY_HOOKS	0x52474102
