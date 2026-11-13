@@ -2,3 +2,6 @@ tests/build.*/
 tests/sync-pool/build.*/
 tests/accelerant-cursor/build.*/
 tests/chan-report/build.*/
+tools/crosscheck/.last.log
+tools/crosscheck/.last-mesa.log
+tools/crosscheck/.mesa-gen/

@@ -18,9 +18,11 @@ recorded in `docs/event-sync.md`.
 
 "Syntax-checked" below means `tools/crosscheck/run.sh`: clang compiles the
 kernel driver, the SDK wrappers and the accelerant with `-fsyntax-only`
-against Renga's kernel headers and NVIDIA's headers. It finds wrong types and
-signatures; it does not find link errors or GCC-only errors, and says nothing
-about behaviour.
+against Renga's kernel headers and NVIDIA's headers. For the Mesa tree,
+`tools/crosscheck/mesa.sh` does the same for NVK's RM back end and the Renga
+WSI, with Mesa's generated headers made by Mesa's own generators. It finds
+wrong types and signatures; it does not find link errors or GCC-only errors,
+and says nothing about behaviour.
 
 ## Decisions
 
@@ -49,7 +51,7 @@ about behaviour.
 | `tools/renga-test.sh`: build, install, run tests, collect one report archive | Smoke-tested on Linux | Timeout and collection paths only |
 | GPU presentation interface, driver half (R-1) | Syntax-checked | Follows Renga's `<add-ons/graphics/GpuPresent.h>` (`744fa9b4`); `wait_fd` and repeating vblank events implemented; events on one eventfd; see Display |
 | `nvkms_get_per_open_data()` (second-descriptor NVKMS ioctls) | Syntax-checked | Was `return NULL` |
-| NVK: fence the USERD `GPPut` write and the doorbell; ring stalled channels again and report it | Written | Candidate for the OBS hang; not compiled outside Haiku (needs the full Mesa build) |
+| NVK: fence the USERD `GPPut` write and the doorbell; ring stalled channels again and report it | Syntax-checked | Candidate for the OBS hang |
 | RM caching type `UNCACHED_WEAK` maps uncached, not write-back | Syntax-checked | `to_haiku_cache_type()` fell through to 0 for it; unknown types now map uncached with a log line |
 
 ## Inherited from `rtx5070-event-sync`
@@ -82,7 +84,7 @@ about behaviour.
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Renga WSI | Layer host-tested, Mesa platform syntax-checked | `docs/RENGA-WSI.md`. Default on this branch; `QUASAR_WSI=videostreams` falls back to VideoStreamsWsi. No CPU wait in the application's thread, no shared queue, acquire signalled by the driver. Zero-copy waits on F-47/F-58 |
+| Renga WSI | Layer host-tested, Mesa platform syntax-checked (`mesa.sh`) | `docs/RENGA-WSI.md`. Default on this branch; `QUASAR_WSI=videostreams` falls back to VideoStreamsWsi. No CPU wait in the application's thread, no shared queue, acquire signalled by the driver. Zero-copy waits on F-47/F-58 |
 | `VK_EXT_external_memory_host` | Blocked | Needs long-term pinning of user pages (`RENGA-REQUESTS.md`, R-5); `os_lock_user_pages()` refuses cleanly and NVK does not offer the extension |
 | External memory/semaphore sharing between processes | Written (inherited) | NVK shares through RM's export-object-to-fd on an `nvidiactl` descriptor, not dma-buf; needs a test with two processes passing the descriptor |
 | `VK_EXT_memory_budget` | Not started | |
