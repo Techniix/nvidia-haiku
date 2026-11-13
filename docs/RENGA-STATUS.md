@@ -37,6 +37,15 @@ and says nothing about behaviour.
 - **Mesa on a branch, not patch files (2026-11-11).** `mesa-nvk` is a branch
   of `Techniix/mesa` with X547's Haiku port and the former
   `tools/patches/mesa-nvk` series as commits.
+- **AI-written Mesa commits are labelled and stay in the fork
+  (2026-11-13).** Mesa's `AGENTS.md` asks that AI-developed commits carry
+  `Generated-by: LLM` and that published prose be the contributor's own.
+  Commits on `Techniix/mesa` made with AI from now on carry that trailer
+  (and the marker word Mesa's policy asks for), and none of this is sent to
+  Mesa's GitLab as it is: anything offered upstream is rewritten and
+  submitted by a person. Earlier commits on `renga` and `renga-26.3`
+  predate the decision and lack the trailer; they are not rewritten, since
+  both branches are published.
 - **Mesa 26.3 (2026-11-13).** The branch is now `renga-26.3`: the same
   commits re-applied on Mesa 26.3 (three build-file conflicts, described in
   its first commit), for NVK's Vulkan Video decode and the other NVK changes
