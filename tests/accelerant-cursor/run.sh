@@ -57,7 +57,8 @@ srcs="$repo/accelerant/Accelerant.cpp $repo/accelerant/NvKmsBitmap.cpp \
  $repo/accelerant/NvUtils.cpp $repo/nvrm_cpp_sdk/ErrorUtils.cpp \
  $repo/nvrm_cpp_sdk/NvRmApi.cpp $repo/nvrm_cpp_sdk/NvRmDevice.cpp \
  $repo/nvrm_cpp_sdk/NvKmsApi.cpp $repo/nvrm_cpp_sdk/NvKmsDevice.cpp \
- $repo/nvrm_cpp_sdk/NvKmsSurface.cpp $here/cursor-test.cpp"
+ $repo/nvrm_cpp_sdk/NvKmsSurface.cpp $here/cursor-test.cpp \
+ $here/present-stub.cpp"
 wraps="-Wl,--wrap=open -Wl,--wrap=close -Wl,--wrap=ioctl -Wl,--wrap=__ioctl \
  -Wl,--wrap=delete_area \
  -Wl,--wrap=load_driver_settings -Wl,--wrap=get_driver_boolean_parameter \

@@ -21,6 +21,7 @@
 
 #include <Accelerant.h>
 #include <OS.h>
+#include <add-ons/graphics/HardwareCursor.h>	// Renga F-59
 
 #include <assert.h>
 #include <errno.h>
@@ -760,6 +761,45 @@ static void TestHardwareCursor()
 		&& withCursor.objects == base.objects + 2 && withCursor.mappings == base.mappings + 2,
 		"steady state should be two cursor images");
 
+	// Renga's B_GET_CURSOR_MAX_SIZE: the limit app_server uses for a pointer
+	// with a drag bitmap composited in. The fake reports maxCursorSize 256.
+	{
+		auto getMax = (get_cursor_max_size)get_accelerant_hook(B_GET_CURSOR_MAX_SIZE, nullptr);
+		CHECK(getMax != nullptr, "B_GET_CURSOR_MAX_SIZE not exported");
+		if (getMax != nullptr) {
+			uint16 mw = 0, mh = 0;
+			CHECK(getMax(B_RGBA32, &mw, &mh) == B_OK && mw == 256 && mh == 256,
+				"max cursor size %ux%u, want 256x256", mw, mh);
+			CHECK(getMax(B_RGB32, &mw, &mh) != B_OK, "B_RGB32 cursors reported as supported");
+			CHECK(getMax(B_RGBA32, nullptr, &mh) != B_OK, "NULL width accepted");
+		}
+	}
+
+	// A drag as Renga's app_server does it (aa1cd0da): the pointer and the
+	// drag bitmap composited into one large image, hot spot moved to where
+	// the pointer is in it, moved around, then the pointer alone again. Every
+	// size up to the reported maximum must be taken.
+	{
+		CHECK(SetBitmap(h, 230, 150, 101, 73) == B_OK, "drag image refused");
+		CheckScreen("drag image");
+		for (int i = 0; i < 20; i++) {
+			sExpected.x = 300 + 7 * i;
+			sExpected.y = 400 - 5 * i;
+			h.move(sExpected.x, sExpected.y);
+			CheckScreen("drag move");
+		}
+		CHECK(SetBitmap(h, 256, 256, 255, 255) == B_OK, "256x256 drag image refused");
+		CheckScreen("largest drag image");
+		// Larger than reported: refused, and the screen keeps what it had,
+		// so app_server's software fallback starts from a known state.
+		CHECK(SetBitmap(h, 257, 40, 3, 3) != B_OK, "257-wide image accepted");
+		CHECK(SetBitmap(h, 40, 300, 3, 3) != B_OK, "300-high image accepted");
+		CheckScreen("after refused drag images");
+		CHECK(SetBitmap(h, 16, 16, 1, 1) == B_OK, "pointer after drag");
+		CheckScreen("pointer after drag");
+		CheckCounts("drag", withCursor, Snapshot());
+	}
+
 	// Shape changes, moves, show/hide, all sizes the hardware takes.
 	for (int i = 0; i < 400; i++) {
 		int w = 1 + Random() % 256;
@@ -982,7 +1022,8 @@ static void TestDisabledBySettings()
 		sHardwareCursorSetting = "false";
 		bool none = get_accelerant_hook(B_MOVE_CURSOR, nullptr) == nullptr
 			&& get_accelerant_hook(B_SHOW_CURSOR, nullptr) == nullptr
-			&& get_accelerant_hook(B_SET_CURSOR_BITMAP, nullptr) == nullptr;
+			&& get_accelerant_hook(B_SET_CURSOR_BITMAP, nullptr) == nullptr
+			&& get_accelerant_hook(B_GET_CURSOR_MAX_SIZE, nullptr) == nullptr;
 		CHECK(none, "hardware_cursor false still exports cursor hooks");
 		CHECK(sSettingsHandles == 0, "settings handle leaked");
 		_exit(sFailures == 0 ? 0 : 1);

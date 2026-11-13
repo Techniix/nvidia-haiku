@@ -15,6 +15,17 @@
 #include "NvKmsBitmap.h"
 #include "NvPresent.h"
 
+// Renga's optional cursor size query (F-59, aa1cd0da). Declared here when
+// building against a tree without the header; the feature code and the
+// signature are fixed by Renga's header.
+#if __has_include(<add-ons/graphics/HardwareCursor.h>)
+#include <add-ons/graphics/HardwareCursor.h>
+#else
+#define B_GET_CURSOR_MAX_SIZE	0x52474101
+typedef status_t (*get_cursor_max_size)(color_space space, uint16* maxWidth,
+	uint16* maxHeight);
+#endif
+
 #include <memory>
 
 extern "C" {
@@ -194,6 +205,7 @@ public:
 	void ShowCursor(bool isVisible);
 	void SetCursorShape(uint16 width, uint16 height, uint16 hotX, uint16 hotY, const uint8* andMask, const uint8* xorMask);
 	void SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uint16 hotY, color_space colorSpace, uint16 bytesPerRow, const uint8* bitmapData);
+	uint32 CursorMaxSize();
 
 	const gpu_present_hooks *PresentHooks();
 	NvHandle ScanoutMemory(NvU32 head, gpu_buffer_desc *desc);
@@ -802,12 +814,12 @@ void NvAccelerant::SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uin
 	// The cursor must be square, 32, 64, 128 or 256 pixels. The display
 	// engine has no cursor pitch, so rows must be packed, and NvKmsBitmap
 	// pads rows to 256 bytes: start at 64 (256 bytes per row).
-	const uint32 maxSize = fKmsDev.Info().maxCursorSize;
+	const uint32 maxSize = CursorMaxSize();
 	uint32 cursorSize = 64;
 	while (cursorSize < width || cursorSize < height) {
 		cursorSize *= 2;
 	}
-	if (cursorSize > maxSize || cursorSize > 256) {
+	if (cursorSize > maxSize) {
 		RaiseErrno(EINVAL);
 	}
 
@@ -842,6 +854,24 @@ void NvAccelerant::SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uin
 	if (fCursorVisible) {
 		ApplyCursorPosition();
 	}
+}
+
+
+// The largest cursor set_cursor_bitmap() takes, in both directions: the
+// device's limit, and at most 256, the largest of the display engine's cursor
+// sizes. Every size up to it is accepted, because a bitmap is padded with
+// transparent pixels to the next of 64, 128 and 256 (see SetCursorBitmap()).
+// Renga's B_GET_CURSOR_MAX_SIZE reports this, so app_server knows how large a
+// pointer with a drag bitmap composited in can stay in hardware.
+uint32 NvAccelerant::CursorMaxSize()
+{
+	uint32 maxSize = fKmsDev.Info().maxCursorSize;
+	if (maxSize > 256)
+		maxSize = 256;
+	// Not a power of two of at least 64: no size is guaranteed to work.
+	if (maxSize < 64 || (maxSize & (maxSize - 1)) != 0)
+		return 0;
+	return maxSize;
 }
 
 
@@ -1276,6 +1306,35 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 					return ToErrorCode(ex);
 				} catch (...) {
 					// e.g. std::bad_alloc; never let it unwind into app_server
+					return (status_t)B_ERROR;
+				}
+			};
+			return (void*)fn;
+		}
+
+		// Renga (F-59): the largest cursor app_server may hand to
+		// set_cursor_bitmap(). While something is dragged, app_server
+		// composites the pointer and the drag bitmap into one cursor image;
+		// with this hook it never offers one larger than we take, so it
+		// doesn't need a refused call to fall back to its software cursor.
+		// Only B_RGBA32, the one cursor format set_cursor_bitmap() takes.
+		case B_GET_CURSOR_MAX_SIZE: {
+			if (!HardwareCursorEnabled()) {
+				return nullptr;
+			}
+			get_cursor_max_size fn = [](color_space space, uint16* maxWidth, uint16* maxHeight) {
+				if (maxWidth == NULL || maxHeight == NULL)
+					return (status_t)B_BAD_VALUE;
+				if (space != B_RGBA32)
+					return (status_t)B_NOT_SUPPORTED;
+				try {
+					uint32 size = NvAccelerant::Instance()->CursorMaxSize();
+					if (size == 0)
+						return (status_t)B_NOT_SUPPORTED;
+					*maxWidth = (uint16)size;
+					*maxHeight = (uint16)size;
+					return (status_t)B_OK;
+				} catch (...) {
 					return (status_t)B_ERROR;
 				}
 			};
