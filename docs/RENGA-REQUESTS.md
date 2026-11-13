@@ -116,6 +116,17 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 
 ## Open questions to Renga
 
+- FFmpeg with Vulkan (for the hardware decode back end, `docs/VIDEO.md`):
+  is Renga's FFmpeg built with `--enable-vulkan`, so that its Vulkan
+  hwaccel (`ffmpeg -hwaccels` lists `vulkan`) is there? Quasar plans its
+  `VideoAcceleration.h` decode back end on top of it: FFmpeg parses the
+  bitstream and decodes through Vulkan Video, which keeps the back end
+  vendor-neutral (any Vulkan driver with video decode, LinuxKPI DRM
+  drivers included). If it isn't, request: build it with Vulkan (it needs
+  only the Vulkan headers and loader at build time). Background: NVK in
+  Mesa 26.3 decodes H.264 this way; NVENC encode is not possible, its
+  interface is not public.
+
 - `GpuPresent.h` comments: answered in `6af51a3a`.
 - VideoAcceleration.h: answered 2026-11-12 (installed with the development
   headers; the version is bumped on any change).
