@@ -3,8 +3,9 @@
 # that is not Haiku, so that compile errors show up before a test build on
 # the hardware.
 #
-# What it checks: NVK's RM back end (src/nouveau/vulkan/nvkmd/nvrm) and the
-# Renga WSI (wsi_common_renga.cpp, wsi_common_headless.c), compiled with
+# What it checks: NVK's RM back end (src/nouveau/vulkan/nvkmd/nvrm), the
+# Renga WSI (wsi_common_renga.cpp, wsi_common_headless.c), the rest of NVK's
+# C sources and the shared files the Haiku port changes, compiled with
 # clang -fsyntax-only for x86_64-unknown-haiku against a Haiku or Renga
 # tree's headers, the NVIDIA SDK headers from open-gpu-kernel-modules, and
 # the headers Mesa generates at build time. Flags follow the meson build
@@ -105,9 +106,31 @@ PYEOF
 		--out-c $gen/vk_format_info.c --out-h $gen/vk_format_info.h
 	python3 src/util/format/u_format_table.py src/util/format/u_format.yaml \
 		--enums > $gen/util/format/u_format_gen.h
+	python3 $U/vk_entrypoints_gen.py --xml $X --proto --weak --beta false \
+		--out-h $gen/nvk_entrypoints.h --out-c $gen/nvk_entrypoints.c \
+		--prefix nvk
+	python3 bin/git_sha1_gen.py --output $gen/git_sha1.h
+	python3 src/compiler/builtin_types_h.py $gen/builtin_types.h
+	# NIR's opcode and intrinsic headers, which NVK's shader headers use.
+	N=src/compiler/nir
+	python3 $N/nir_opcodes_h.py > $gen/nir_opcodes.h
+	python3 $N/nir_builder_opcodes_h.py > $gen/nir_builder_opcodes.h
+	python3 $N/nir_intrinsics_h.py --out $gen/nir_intrinsics.h
+	python3 $N/nir_intrinsics_indices_h.py --out $gen/nir_intrinsics_indices.h
+	# NVK's driconf header (Mesa 26.3 and later).
+	if [ -f src/nouveau/vulkan/nvk_drirc_gen.py ]; then
+		python3 src/nouveau/vulkan/nvk_drirc_gen.py --import-path src/util \
+			--drirc-src $gen/nvk_drirc.c --drirc-hdr $gen/nvk_drirc.h \
+			--validate src/nouveau/vulkan/00-nvk-defaults.conf
+	fi
 	if command -v cbindgen >/dev/null; then
 		cbindgen -q --config src/nouveau/nil/cbindgen.toml --lang c \
 			--output $gen/nil.h -- src/nouveau/nil/lib.rs
+		# NVK's own Rust (Mesa 26.3 and later: video decode).
+		if [ -f src/nouveau/vulkan/rust/cbindgen.toml ]; then
+			cbindgen -q --config src/nouveau/vulkan/rust/cbindgen.toml --lang c \
+				--output $gen/nvk_rust.h -- src/nouveau/vulkan/rust/lib.rs
+		fi
 	fi
 	) || { echo "generating Mesa's headers failed" >&2; rm -rf "$gen"; return 1; }
 	stamp > "$gen/stamp"
@@ -140,11 +163,31 @@ sys+=(-isystem "$H/compatibility/bsd" -isystem "$H/glibc"
 # Defines meson's config gives a Haiku build that the headers depend on.
 defs=(-D__HAIKU__ -DHAVE_PTHREAD -DHAVE_TIMESPEC_GET -DHAVE_STRUCT_TIMESPEC
 	-DUTIL_ARCH_LITTLE_ENDIAN=1 -DUTIL_ARCH_BIG_ENDIAN=0
-	-DNVTYPES_USE_STDINT=1 -DNVKMD_BACKEND_NVRM -DNVKMD_NVRM_VERSION='"crosscheck"')
+	-DNVTYPES_USE_STDINT=1 -DNVKMD_BACKEND_NVRM -DNVKMD_NVRM_VERSION='"crosscheck"'
+	-DPACKAGE_VERSION="\"$(cat "$M/VERSION")\"")
+# What meson finds GCC supports (meson.build: _attributes and the GCC
+# builtins). Mesa's macros depend on them: without HAVE_FUNC_ATTRIBUTE_PACKED,
+# ENUM_PACKED is empty and NVK's static size checks fail. __builtin_*_p
+# overflow checks are left out, since clang lacks them.
+for a in CONST FLATTEN MALLOC PURE UNUSED WARN_UNUSED_RESULT WEAK FORMAT \
+		PACKED RETURNS_NONNULL ALIAS NORETURN OPTIMIZE COLD VISIBILITY; do
+	defs+=(-DHAVE_FUNC_ATTRIBUTE_$a)
+done
+for b in BSWAP32 BSWAP64 CLZ CLZLL CTZ EXPECT FFS FFSLL POPCOUNT POPCOUNTLL \
+		UNREACHABLE TYPES_COMPATIBLE_P; do
+	defs+=(-DHAVE___BUILTIN_$b)
+done
+# meson defines every codec (-Dvideo-codecs); Quasar's build enables H.264
+# decode, the one NVK supports.
+for c in VC1DEC H264ENC H265DEC H265ENC AV1DEC AV1ENC VP9DEC MPEG12DEC JPEGDEC; do
+	defs+=(-DVIDEO_CODEC_$c=0)
+done
+defs+=(-DVIDEO_CODEC_H264DEC=1)
 
 inc=(-I"$M/include" -I"$M/src" -I"$gen" -I"$M/src/nouveau/headers"
 	-I"$M/src/nouveau/headers/nvidia/classes" -I"$M/src/nouveau/winsys"
-	-I"$M/src/nouveau/nil" -I"$M/src/nouveau/vulkan"
+	-I"$M/src/nouveau/nil" -I"$M/src/nouveau/compiler" -I"$M/src/nouveau/mme"
+	-I"$M/src/nouveau/vulkan"
 	-I"$M/src/nouveau/vulkan/nvkmd/nvrm"
 	-I"$nv/src/nvidia/arch/nvalloc/common/inc"
 	-I"$nv/src/nvidia/arch/nvalloc/unix/include"
@@ -162,9 +205,19 @@ common=(--target=x86_64-unknown-haiku -nostdinc -fsyntax-only -Wall
 	-Wno-unused-variable -Wno-pointer-sign)
 
 if [ $# -eq 0 ]; then
+	# The RM back end, the Renga WSI, all of NVK (it is built on Haiku as a
+	# whole, and the RM back end changes what it compiles against), and the
+	# shared runtime and util files the Haiku port touches.
 	set -- "$M"/src/nouveau/vulkan/nvkmd/nvrm/*.c \
 		"$M/src/vulkan/wsi/wsi_common_renga.cpp" \
-		"$M/src/vulkan/wsi/wsi_common_headless.c"
+		"$M/src/vulkan/wsi/wsi_common_headless.c" \
+		"$M/src/nouveau/vulkan/nvkmd/nvkmd.c"
+	for f in "$M"/src/nouveau/vulkan/nvk_*.c; do
+		set -- "$@" "$f"
+	done
+	set -- "$@" "$M/src/vulkan/runtime/vk_device.c" \
+		"$M/src/vulkan/runtime/vk_image.c" "$M/src/util/os_misc.c" \
+		"$M/src/util/u_process.c"
 fi
 
 fail=0
@@ -179,6 +232,13 @@ for f in "$@"; do
 	esac
 	if [ $have_nil = 0 ] && grep -q '"nvk_' "$f"; then
 		echo "--- skipped (needs nil.h, install cbindgen) ${f#$M/}"
+		skipped=$((skipped + 1))
+		continue
+	fi
+	# nvkcl.h comes from OpenCL C through mesa_clc and vtn_bindgen2, which
+	# need LLVM and libclc; not made here.
+	if grep -q '"nvkcl.h"' "$f"; then
+		echo "--- skipped (needs nvkcl.h from mesa_clc) ${f#$M/}"
 		skipped=$((skipped + 1))
 		continue
 	fi
