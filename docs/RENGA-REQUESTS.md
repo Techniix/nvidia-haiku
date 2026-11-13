@@ -8,6 +8,19 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-13
+
+- FFmpeg with Vulkan: Renga builds its own FFmpeg 6.1.6 with
+  `--enable-vulkan` (RengaPorts recipe, ahead of HaikuPorts) and puts
+  `vulkan_loader` in the image, right after its development-package work.
+  Quasar's answer: FFmpeg 6.1 is enough. Vulkan encode (FFmpeg 7.1) isn't
+  needed, because NVK has no video encode and NVENC can't be driven
+  (`docs/VIDEO.md`); stay on `ffmpeg6`.
+- The GPU stage moves up to third in Renga's work order, and Renga asks for
+  everything else the driver needs to be feature-complete. That is R-6 to
+  R-15 below, with priorities and interfaces.
+- Hardware cursor: acknowledged; nothing further needed.
+
 ## Renga's notes of 2026-11-12, round 2
 
 - `6af51a3a`: the two `GpuPresent.h` comment changes Quasar asked for are in,
@@ -116,16 +129,8 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 
 ## Open questions to Renga
 
-- FFmpeg with Vulkan (for the hardware decode back end, `docs/VIDEO.md`):
-  is Renga's FFmpeg built with `--enable-vulkan`, so that its Vulkan
-  hwaccel (`ffmpeg -hwaccels` lists `vulkan`) is there? Quasar plans its
-  `VideoAcceleration.h` decode back end on top of it: FFmpeg parses the
-  bitstream and decodes through Vulkan Video, which keeps the back end
-  vendor-neutral (any Vulkan driver with video decode, LinuxKPI DRM
-  drivers included). If it isn't, request: build it with Vulkan (it needs
-  only the Vulkan headers and loader at build time). Background: NVK in
-  Mesa 26.3 decodes H.264 this way; NVENC encode is not possible, its
-  interface is not public.
+- FFmpeg with Vulkan: answered 2026-11-13 (Renga builds FFmpeg 6.1.6 with
+  `--enable-vulkan`); now R-14.
 
 - `GpuPresent.h` comments: answered in `6af51a3a`.
 - VideoAcceleration.h: answered 2026-11-12 (installed with the development
@@ -138,6 +143,16 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 | R-3 | `futex()` wait/wake | Scheduled: F-49 | F-49 |
 | R-4 | Game mode notifications for drivers | Scheduled: F-50 (Renga proposes the interface) | F-50 |
 | R-5 | Long-term pinning of user pages for device DMA | Accepted in principle: GPU stage | F-35 (NVK coverage), F-48 |
+| R-6 | Several displays and hot-plug (display hooks, app_server screens) | Proposed, P1 | GPU stage |
+| R-7 | Variable refresh rate | Proposed, P1 | GPU stage |
+| R-8 | Resizable BAR in the PCI bus manager | Proposed, P1 | GPU stage |
+| R-9 | Shutdown and suspend/resume for drivers | Proposed: shutdown P1, suspend P2 | GPU stage |
+| R-10 | Display power: DPMS on idle, per display | Proposed, P2 | GPU stage |
+| R-11 | Gamma and colour LUTs | Proposed, P2 | GPU stage |
+| R-12 | Overlay planes used by app_server (video, direct scanout) | Proposed, P2 (interface is R-1) | GPU stage |
+| R-13 | GPU monitoring interface (temperature, clocks, load, VRAM) | Proposed, P2 | GPU stage |
+| R-14 | Hardware video decode in the Media Kit | Proposed, P2 (FFmpeg with Vulkan accepted) | GPU stage |
+| R-15 | Monitor brightness (DDC/CI), HDR and 10-bit output | Proposed, P3 | later |
 
 ## R-1 Accelerant extension
 
@@ -325,6 +340,233 @@ application exit.
 
 **Until then:** the allocation fails with `NV_ERR_NOT_SUPPORTED`, logged once,
 and NVK does not advertise the extension.
+
+## Feature-complete driver: R-6 to R-15 (2026-11-13)
+
+Priorities: **P1** a desktop driver isn't complete without it; **P2**
+expected of a complete driver; **P3** later. Everything here is provisional
+in the same way as R-1: names and layouts can change until Renga's GPU stage
+fixes them, and any change bumps the version field. New tables are reached
+through `get_accelerant_hook()` with feature codes in the same `0x5247xxxx`
+range as R-1 and F-59 (`B_GPU_PRESENT_HOOKS` 0x52474100,
+`B_GET_CURSOR_MAX_SIZE` 0x52474101).
+
+What Quasar does today, for reference: one display (the first connected
+one, on head 0), modes from NVKMS's validated list, EDID, DPMS on and off,
+hardware cursor, and the R-1 table. NVKMS itself supports four heads,
+hot-plug events, VRR, gamma LUTs and overlay layers; what is missing is the
+interface to app_server and app_server's side.
+
+### R-6 Several displays and hot-plug (P1)
+
+**Driver side (Quasar):** one accelerant drives every connector of the GPU;
+the legacy hooks keep driving the first display, so a stock app_server
+still works. A new table describes connectors and sets all displays at once:
+
+```c
+#define B_GET_DISPLAY_HOOKS	0x52474102
+#define B_DISPLAY_HOOKS_VERSION	1
+
+typedef enum {
+	B_CONNECTOR_UNKNOWN, B_CONNECTOR_VGA, B_CONNECTOR_DVI,
+	B_CONNECTOR_HDMI, B_CONNECTOR_DISPLAYPORT, B_CONNECTOR_EDP,
+	B_CONNECTOR_USB_C
+} display_connector_type;
+
+typedef struct {
+	uint32		id;				/* stable while the GPU is present */
+	display_connector_type type;
+	char		name[16];		/* "DP-1", "HDMI-1": for settings and UI */
+	bool		connected;
+	uint32		flags;			/* B_DISPLAY_CAN_VRR, B_DISPLAY_INTERNAL */
+	uint32		vrr_min_hz;		/* 0 when no VRR */
+	uint32		vrr_max_hz;
+	uint32		gamma_size;		/* LUT entries per channel, 0 if none */
+	uint32		max_bpc;		/* bits per colour the link allows */
+} display_connector_info;
+
+typedef struct {
+	uint32		connector;		/* display_connector_info.id */
+	bool		enabled;
+	display_mode mode;			/* from that connector's mode list */
+	int32		x, y;			/* position in the desktop, for the driver's
+								   cursor across displays */
+	uint32		flags;			/* B_DISPLAY_ALLOW_VRR */
+} display_config;
+
+typedef struct {
+	uint32		version;		/* B_DISPLAY_HOOKS_VERSION */
+	uint32		(*connector_count)(void);
+	status_t	(*get_connector)(uint32 index, display_connector_info* info);
+	/* Whole EDID with extension blocks (CTA-861, DisplayID), which carry
+	   VRR and HDR capabilities that edid1_info leaves out. *size in: the
+	   buffer's size; out: the EDID's. */
+	status_t	(*get_edid)(uint32 connector, void* buffer, size_t* size);
+	uint32		(*mode_count)(uint32 connector);
+	status_t	(*get_mode_list)(uint32 connector, display_mode* modes);
+	/* All displays in one call, applied together or not at all (NVKMS
+	   validates a whole configuration, and a second display can make a
+	   mode on the first impossible). B_BAD_VALUE leaves everything as it
+	   was. */
+	status_t	(*set_configuration)(const display_config* configs,
+					uint32 count);
+	status_t	(*get_frame_buffer_config)(uint32 connector,
+					frame_buffer_config* config);
+	status_t	(*set_dpms_mode)(uint32 connector, uint32 mode);	/* R-10 */
+	status_t	(*set_gamma)(uint32 connector, const uint16* red,
+					const uint16* green, const uint16* blue,
+					uint32 size);								/* R-11 */
+} display_hooks;
+```
+
+Hot-plug is an event on R-1's event descriptor, so app_server waits on one
+descriptor for everything: `B_GPU_EVENT_HOTPLUG` with the connector id in
+`gpu_present_event.head`, sent when a monitor is connected, removed, or its
+EDID changes. That adds a value to `gpu_present_event_type` (and bumps
+`B_GPU_PRESENT_VERSION` to 2, or reuse version 1 while it is provisional,
+as Renga prefers).
+
+**Renga side:** app_server with one `Screen` per enabled display in one
+desktop coordinate space; `BScreen` for each (`B_MAIN_SCREEN_ID` stays the
+primary); Screen preferences to arrange displays, choose the primary and set
+each one's mode; settings kept per monitor (EDID manufacturer, product and
+serial), so a monitor gets its mode back when it returns. On hot-plug:
+re-read connectors, apply the saved or preferred configuration, and move
+windows off a display that went away. The framebuffers stay
+driver-allocated, as today (`get_frame_buffer_config` per connector).
+
+### R-7 Variable refresh rate (P1)
+
+**Driver side:** `display_connector_info` reports the VRR range (from
+NVKMS, which reads the EDID and checks the link), `set_configuration` with
+`B_DISPLAY_ALLOW_VRR` enables it for the mode (NVKMS needs it at mode-set
+time), and R-1's `B_GPU_FLIP_VRR` asks for it on a flip.
+
+**Renga side:** a per-display "Variable refresh rate" switch in Screen
+preferences, on by default where supported; app_server sets
+`B_DISPLAY_ALLOW_VRR` for it and uses `B_GPU_FLIP_VRR` only for a window
+that presents directly (full screen, through the GPU stage), typically in
+game mode (R-4). The desktop itself flips at a fixed rate, since VRR on
+desktop updates makes the refresh rate swing visibly.
+
+### R-8 Resizable BAR (P1)
+
+The RTX 5070 can expose all 12 GB of video memory through BAR1. Without
+Resizable BAR the BAR is 256 MB, and that is all the CPU can map: NVK's
+host-visible video memory (uploads, persistently mapped buffers, which
+games and emulators such as Eglantine use heavily) has to fit in it or fall
+back to system memory.
+
+**Renga side:** in the PCI bus manager, during resource assignment and
+before drivers attach: find the Resizable BAR extended capability
+(PCIe capability ID 0x15), choose the largest size the bridge window can
+hold (moving a 64-bit prefetchable BAR above 4 GB when the firmware allows,
+"Above 4G decoding"), program it, then assign as usual. A kernel setting
+to turn it off, and the result in syslog. No driver interface: Quasar reads
+the BAR size from `pci_info` as today (64-bit sizes).
+
+### R-9 Shutdown and suspend/resume (shutdown P1, suspend P2)
+
+**Shutdown (P1).** The driver needs to stop the GPU before a reboot or
+power-off. NVIDIA's Linux driver has a PCI shutdown hook
+(`nv_pci_shutdown()`) that marks the device as shut down and turns off bus
+mastering, so the GPU stops DMA into memory that the firmware and the next
+boot reuse. Haiku has no such hook, so the GPU keeps running until the
+reset. Request: the kernel calls a driver hook at shutdown and reboot,
+after app_server has quit and before the reboot itself:
+
+```c
+/* In device_hooks or the driver's module info: called once, in reverse
+   probe order, with interrupts still working. May take up to 5 s. */
+status_t (*shutdown)(void* cookie, bool reboot);
+```
+
+**Suspend and resume (P2).** For S3 sleep: `suspend(cookie, state)` and
+`resume(cookie)` hooks, called children before parents on suspend and the
+reverse on resume, plus a message to running applications before suspend
+and after resume (`B_SYSTEM_SUSPENDING`, `B_SYSTEM_RESUMED`), so app_server
+restores the display configuration and Vulkan applications recreate
+swapchains. NVIDIA's suspend copies video memory in use to system memory,
+so the driver needs to allocate up to that much during `suspend`; the
+kernel must not have frozen allocation by then.
+
+### R-10 Display power (P2)
+
+The DPMS hooks exist and Quasar implements on and off. **Renga side:**
+app_server turns displays off after the idle time set in the Screen Saver
+or a power preference, and on again at the next input; per display through
+`display_hooks.set_dpms_mode` once R-6 lands.
+
+### R-11 Gamma and colour LUTs (P2)
+
+For a night-light mode, monitor calibration, and games that set the gamma
+ramp (SDL). **Driver side:** `display_hooks.set_gamma`, 16-bit entries,
+`gamma_size` per channel (NVKMS takes 1024), applied at the next vblank.
+**Renga side:** a private `BScreen` call to set and get the ramp, used by
+the Screen preferences and SDL's Haiku back end; app_server restores the
+saved ramp after a mode change or hot-plug.
+
+### R-12 Overlay planes in app_server (P2)
+
+The interface is R-1 (planes, `B_GPU_PRESENT_SCALING` and
+`B_GPU_PRESENT_PLACEMENT`). **Renga side:** app_server puts a full-screen
+window's buffer straight on the primary plane (direct scanout), and a video
+window's frames on an overlay plane, with the desktop composited around it.
+This is what makes video playback and windowed games skip the composition
+copy.
+
+### R-13 GPU monitoring (P2)
+
+For the Graphics settings app Quasar ships, and for ActivityMonitor.
+**Renga side:** a common interface every GPU driver can implement, so
+system tools don't need to know NVIDIA's:
+
+```c
+/* <drivers/GpuMonitor.h>: an ioctl on the driver's device file. */
+#define B_GPU_GET_STATS		0x52474110
+
+typedef struct {
+	uint32	version;				/* 1 */
+	char	name[64];				/* "NVIDIA GeForce RTX 5070" */
+	uint64	vram_total, vram_used;	/* bytes */
+	uint32	gpu_load;				/* percent, 0-100 */
+	uint32	memory_load;			/* percent */
+	uint32	core_clock_mhz, memory_clock_mhz;
+	int32	temperature_mc;			/* milli-degrees C, INT32_MIN if unknown */
+	uint32	fan_rpm, fan_percent;	/* 0 if no fan reading */
+	uint32	power_mw;				/* 0 if unknown */
+} gpu_stats;
+```
+
+and ActivityMonitor data sources for GPU load, VRAM use and temperature.
+Quasar implements it from RM's thermal, clock and utilisation controls.
+
+### R-14 Hardware video decode in the Media Kit (P2)
+
+Accepted on 2026-11-13 for FFmpeg (6.1.6 with `--enable-vulkan`). What is
+left for Renga: that FFmpeg's plug-in tries Vulkan Video decode first when
+a Vulkan device offers `VK_KHR_video_decode_queue` (through the
+`VideoAcceleration.h` roster, or directly through FFmpeg's Vulkan hwaccel,
+whichever Renga prefers), with software decode as the fallback; and that
+decoded frames can reach the screen as R-1 buffers (dma-buf style
+descriptors of the Vulkan images), so R-12's overlay plane shows them
+without a copy. Quasar provides the Vulkan side (NVK in Mesa 26.3, H.264;
+`docs/VIDEO.md`).
+
+### R-15 Brightness, HDR and 10-bit (P3)
+
+- **Brightness of external monitors** through DDC/CI (MCCS VCP code 0x10)
+  over the display's I2C bus, which RM provides. The Screen preferences
+  already use `B_SET_BRIGHTNESS`/`B_GET_BRIGHTNESS` for laptop panels;
+  request: show the slider whenever the hook succeeds, and per display
+  once R-6 lands.
+- **10-bit output and HDR**: app_server is 8 bits per colour. When Renga
+  takes this on, the driver side is a colour format in `display_config`
+  (`B_RGBA1010102`) and HDR static metadata (CTA-861.3) per display; no
+  work needed before then.
+
+Not needed from Renga: power and clock management while running (GSP does
+it), multi-GPU, and video encode (no NVENC; `docs/VIDEO.md`).
 
 ## Upstream header bug: `user_fd_kernel_ioctl()`
 
