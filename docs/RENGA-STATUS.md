@@ -42,6 +42,31 @@ and says nothing about behaviour.
   its first commit), for NVK's Vulkan Video decode and the other NVK changes
   since 26.2. The 26.2.2 branch `renga` is left as it was.
 
+## Workarounds, and what replaces each
+
+Quasar is a native Renga driver: a gap in Renga's interfaces is a request to
+Renga, not something to work around in the driver. These are the
+workarounds still in the tree, why each exists, and what removes it.
+
+| Workaround | Why it exists | Native replacement | Needs |
+| --- | --- | --- | --- |
+| RengaWsi Vulkan layer, with VideoStreamsWsi's surface ABI (`VKLayerSurfaceBase`, `BitmapHook`) | Renga has no Vulkan window surface of its own | A native surface in Mesa's Renga WSI platform, presenting through app_server (R-16) | Renga GPU stage, then Mesa |
+| Swapchain images copied into a `BBitmap` on the CPU | app_server takes only bitmaps | Swapchain buffers given to app_server and flipped or composited on the GPU (R-1, R-12, R-16) | Renga GPU stage |
+| `QUASAR_WSI=videostreams` fallback | Safety while the Renga WSI is new | Removed with the layer | First row |
+| Flip `wait_fd` waited on by a helper thread in the accelerant | NVKMS can't wait on a file | The display engine waits on a GPU semaphore in the flip itself (R-1 amendment, 2026-11-13) | `GpuPresent.h` change, then Quasar and Mesa |
+| One NVKMS file descriptor per vblank request, re-armed in user space | NVKMS's vblank notification is one-shot per descriptor | Repeating vblank events from Quasar's own KMS device on the existing event descriptor | Quasar only |
+| `eventfd` from libgnu, with declarations in the accelerant when the header isn't found | `eventfd()` isn't in libroot, and GCC doesn't search `develop/headers/gnu` | `eventfd()` in libroot with `<sys/eventfd.h>` (R-17) | Renga |
+| Quasar's own declaration of `user_fd_kernel_ioctl()` | Renga's header and definition disagree (C vs C++ linkage) | Fix in Renga, and Quasar includes `fs/fd.h` in the same step (R-17) | Renga, then Quasar |
+| Copies of `GpuPresent.h` and `HardwareCursor.h` declarations for older Renga trees | The test machine's Renga image may predate `744fa9b4` and `aa1cd0da` | Removed once Renga confirms the image the next test uses has both (R-17) | Renga's answer |
+| CPU waits in NVK's RM sync code use OS event objects and timed polling | No futex | `futex()` (R-3) | Renga F-49 |
+| Doorbells rung again after a 3 s CPU stall | Recovery and diagnosis for a lost-doorbell bug | Removed once a hardware run shows the submit fences prevent it | A hardware run |
+
+Not workarounds, though they may look like one: bounding GPFIFO reuse by the
+channel fence instead of reading USERD `GPGet` (`0007`) is how NVIDIA's own
+UVM driver tracks completed GPFIFO entries, and saves a read through BAR1 on
+every submit; the accelerant's single event descriptor for flips, vblanks
+and (with R-6) hot-plug is the interface R-1 defines.
+
 ## Changed on this branch
 
 | Change | State | Notes |

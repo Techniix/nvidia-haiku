@@ -153,6 +153,9 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 | R-13 | GPU monitoring interface (temperature, clocks, load, VRAM) | Proposed, P2 | GPU stage |
 | R-14 | Hardware video decode in the Media Kit | Proposed, P2 (FFmpeg with Vulkan accepted) | GPU stage |
 | R-15 | Monitor brightness (DDC/CI), HDR and 10-bit output | Proposed, P3 | later |
+| R-16 | Native Vulkan window surface: buffers presented through app_server | Proposed, P1 | GPU stage |
+| R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Proposed, P1 | any |
+| R-1 amendment | Flips wait on a GPU semaphore, not a file | Proposed, P1 | before the GPU stage fixes R-1 |
 
 ## R-1 Accelerant extension
 
@@ -571,6 +574,130 @@ without a copy. Quasar provides the Vulkan side (NVK in Mesa 26.3, H.264;
 
 Not needed from Renga: power and clock management while running (GSP does
 it), multi-GPU, and video encode (no NVENC; `docs/VIDEO.md`).
+
+### R-1 amendment: flips wait on a GPU semaphore (P1)
+
+`gpu_flip_params.wait_fd` makes the display wait for rendering through a
+file descriptor. NVIDIA's display engine can't wait on a file, so the
+accelerant holds such a flip in a helper thread and submits it when the
+descriptor becomes readable: a CPU wakeup and a thread hop on every frame,
+and latency. The display engine can instead wait on a semaphore in GPU
+memory itself (NVKMS's `syncObjects.semaphores` in a flip): the GPU
+writes the value when rendering is done, the display engine sees it and
+flips at the next vblank, and no CPU is involved. It can also write a
+release value when the buffer leaves the screen, which tells the
+application the buffer is free without an event round trip.
+
+Proposed addition to `GpuPresent.h`, while it is provisional:
+
+```c
+typedef struct {
+	int32		buffer;			/* an imported buffer id holding the semaphore,
+								   or -1 for none */
+	uint32		offset;			/* byte offset of the 32-bit value, 16-byte
+								   aligned */
+	uint32		value;			/* acquire: flip once the word equals it;
+								   release: written when this buffer is
+								   replaced on screen */
+} gpu_semaphore;
+
+/* gpu_flip_params gains, after wait_fd: */
+	gpu_semaphore	acquire;
+	gpu_semaphore	release;
+
+/* gpu_present_caps.flags gains: */
+#define B_GPU_PRESENT_SEMAPHORES	0x10
+```
+
+A flip gives `wait_fd` or `acquire`, not both. `wait_fd` stays for drivers
+whose display waits on fences (the LinuxKPI DRM drivers' dma-fences); a
+driver that sets `B_GPU_PRESENT_SEMAPHORES` takes semaphores. The semaphore
+memory is an ordinary buffer imported with `import_buffer()`, so app_server
+passes it on like any other buffer and needs no NVIDIA knowledge. The Renga
+WSI (R-16) creates one per swapchain and has the GPU write the acquire
+value at the end of the frame's rendering.
+
+### R-16 Native Vulkan window surface (P1)
+
+The window-system path today is a Vulkan layer that wraps a headless
+surface in VideoStreamsWsi's surface ABI and hands app_server a `BBitmap`
+per frame, which the CPU fills from the rendered image. The native path:
+Mesa's Renga WSI platform (Quasar's, in `wsi_common_renga.cpp`) presents
+its swapchain buffers to app_server, which either scans a buffer out
+directly (R-12) or composites it on the GPU. No layer, no bitmap, no CPU
+copy.
+
+What Renga provides, a private libbe class the WSI uses:
+
+```cpp
+namespace BPrivate {
+
+struct gpu_surface_event {
+	uint32	type;		/* B_GPU_SURFACE_RELEASED, _PRESENTED, _RESIZED,
+						   _VISIBILITY */
+	uint32	buffer;		/* RELEASED, PRESENTED: the buffer id */
+	uint32	width, height;	/* RESIZED: the view's new size in pixels */
+	bool	visible;	/* VISIBILITY */
+	bigtime_t time;		/* PRESENTED: when it reached the screen */
+	uint64	sequence;	/* PRESENTED: the display's vblank count */
+};
+
+class GpuSurface {
+public:
+	/* For a BView (a whole window is its top view). */
+	static status_t	Create(BView* view, GpuSurface** _surface);
+	virtual			~GpuSurface();
+
+	status_t		GetSize(uint32* width, uint32* height);
+	/* The display's supported formats and modifiers for this view, as
+	   gpu_buffer_desc formats; the WSI picks one for its images. */
+	status_t		GetFormats(uint32* formats, uint64* modifiers,
+						uint32* count);
+
+	/* Hand buffers to app_server once per swapchain: descriptors go over
+	   app_server_send_fd() (F-58), descriptions with them. */
+	status_t		AttachBuffers(const gpu_buffer_desc* buffers,
+						uint32 count, uint32* _ids);
+	status_t		DetachBuffers(const uint32* ids, uint32 count);
+
+	/* One frame. flags: B_GPU_FLIP_VSYNC (FIFO), B_GPU_FLIP_ASYNC
+	   (IMMEDIATE), 0 (MAILBOX: newest buffer at the next vblank),
+	   B_GPU_FLIP_VRR. sync: the R-1 amendment's semaphore, or a wait_fd. */
+	status_t		Present(uint32 buffer, const gpu_rect* damage,
+						uint32 damageCount, const gpu_flip_params* sync,
+						uint32 flags);
+
+	/* Readable when events are queued; NextEvent() returns B_WOULD_BLOCK
+	   when there are none. */
+	int				EventFd() const;
+	status_t		NextEvent(gpu_surface_event* event);
+};
+
+}
+```
+
+That covers what Vulkan needs: FIFO, MAILBOX and IMMEDIATE present modes,
+`VK_KHR_present_wait` and `VK_GOOGLE_display_timing` (the PRESENTED
+event's time and vblank count), resize (`VK_ERROR_OUT_OF_DATE_KHR` from the
+RESIZED event), and a minimized or hidden window that stops presenting
+(VISIBILITY). Zink and EGL use the same class. On the Mesa side the surface
+becomes a Vulkan extension (`VK_RENGA_view_surface`, name provisional until
+agreed with X547) and the layer is removed.
+
+### R-17 Small fixes (P1)
+
+- `eventfd()` in libroot, with `<sys/eventfd.h>` in the default header
+  path. It lives in libgnu today, whose headers GCC doesn't search, so the
+  accelerant declares it itself. Every event-driven part of the graphics
+  stack (the accelerant, the WSI, NVK's sync code) wants it.
+- `user_fd_kernel_ioctl()`: make the definition in
+  `src/system/kernel/fs/fd.cpp` match the header (C linkage, `ulong op`),
+  and tell Quasar the commit, so its two own declarations go in the same
+  step (details under "Upstream header bug" below).
+- Which Renga image the next test uses, and whether it has
+  `<add-ons/graphics/GpuPresent.h>` (`744fa9b4`) and
+  `<add-ons/graphics/HardwareCursor.h>` (`aa1cd0da`) installed. Once it
+  does, Quasar drops its copies and builds against Renga's headers only.
 
 ## Upstream header bug: `user_fd_kernel_ioctl()`
 
