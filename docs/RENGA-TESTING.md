@@ -25,7 +25,10 @@ tools/renga-test.sh run        # after the reboot
 result of the session. `run` stops once for OBS: add a Screen Capture source,
 wait for a freeze or one minute, press Enter. `--obs <bin dir>` points it at
 an OBS build it does not find; `--skip-tests` runs only the state collection
-and OBS.
+and OBS. `--video` adds a hardware H.264 decode test at the very end (NVK's
+experimental Vulkan Video through FFmpeg, checked frame by frame against
+software decoding). It runs after the report is packed, because a decoder
+fault can hang the GPU; if it does, reboot and run `collect`.
 
 After a freeze and reboot, `tools/renga-test.sh collect` gathers the logs and
 Renga's crash reports.

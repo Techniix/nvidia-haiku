@@ -87,7 +87,7 @@ file, so no code is taken from it; only the `BitmapHook` and
   marked provisional until it is agreed with X547, as the briefing requires;
   applications should treat it as unstable.
 
-### 2. Renga platform in Mesa's WSI (`Techniix/mesa`, branch `renga`)
+### 2. Renga platform in Mesa's WSI (`Techniix/mesa`, branch `renga-26.3`)
 
 `src/vulkan/wsi/wsi_common_renga.cpp`, alongside the existing headless
 platform, which it extends. It is named for Renga, not Haiku: it uses

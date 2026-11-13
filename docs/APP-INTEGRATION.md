@@ -9,7 +9,7 @@ driver offers and expects.
 - Open driver bug: adding a Screen Capture source hangs the graphics thread
   on a timeline fence (`docs/event-sync.md`, Open issues). No application
   change is expected for this. The newest candidate is a lost doorbell on
-  NVK's upload channel; the Mesa `renga` branch fences the submit and
+  NVK's upload channel; the Mesa branch (`renga-26.3`) fences the submit and
   recovers a lost doorbell after 3 s with a log line saying so. Not yet run
   on hardware.
 - OBS's `renga` branch tracks its driver requests as Q-1 to Q-4 in its
@@ -25,14 +25,20 @@ driver offers and expects.
   printed only with `VIDEOSTREAMSWSI_DEBUG` and `NVK_NVRM_DEBUG`.
 - Capture (OBS O-10, Quasar R-2): OBS needs a handle it can import with EGL
   or Vulkan external memory, the damaged region and a timestamp per frame.
-- Hardware encoding (Q-3): through the Media Kit's `VideoAcceleration.h`
-  back end, which FFmpeg's plug-in already uses.
+- Hardware encoding (Q-3): not possible on NVIDIA for now. NVENC has no
+  public programming interface, and no open driver implements it
+  (`docs/VIDEO.md`). OBS encodes on the CPU; Quasar can't change that.
+  Hardware H.264 decode (for media sources) is coming through Vulkan
+  Video.
 
 ## Sunshine (`Techniix/Sunshine_HaikuOS`)
 
 - Captures with `BScreen::ReadBitmap()` today. The GPU capture provider on
   its roadmap maps onto request R-2 in `RENGA-REQUESTS.md`.
-- Hardware encoding depends on the hardware video investigation.
+- Hardware encoding: not possible on NVIDIA for now (no public NVENC
+  interface; `docs/VIDEO.md`). Sunshine encodes on the CPU; for streaming
+  at 1080p60 that needs a fast preset (x264 `ultrafast`/`superfast`, or
+  SVT-AV1 at a high preset number) and a few CPU cores.
 
 ## Eglantine (RengaPorts)
 

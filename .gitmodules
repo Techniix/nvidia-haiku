@@ -1,7 +1,7 @@
 [submodule "mesa-nvk"]
 	path = mesa-nvk
 	url = https://github.com/Techniix/mesa.git
-	branch = renga
+	branch = renga-26.3
 [submodule "mesa-zink"]
 	path = mesa-zink
 	url = https://github.com/X547/mesa.git

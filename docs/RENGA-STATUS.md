@@ -34,9 +34,13 @@ and says nothing about behaviour.
   while LinuxKPI's DMA path bounces through a per-device pool and its coverage
   follows one Wi-Fi driver. Quasar stays native; where the kernel lacks
   something, it is requested in `RENGA-REQUESTS.md`.
-- **Mesa on a branch, not patch files (2026-11-11).** `mesa-nvk` is the
-  `renga` branch of `Techniix/mesa`: X547's `nvrm-event-sync-r4` at `643b3df`
-  with the former `tools/patches/mesa-nvk` series as commits.
+- **Mesa on a branch, not patch files (2026-11-11).** `mesa-nvk` is a branch
+  of `Techniix/mesa` with X547's Haiku port and the former
+  `tools/patches/mesa-nvk` series as commits.
+- **Mesa 26.3 (2026-11-13).** The branch is now `renga-26.3`: the same
+  commits re-applied on Mesa 26.3 (three build-file conflicts, described in
+  its first commit), for NVK's Vulkan Video decode and the other NVK changes
+  since 26.2. The 26.2.2 branch `renga` is left as it was.
 
 ## Changed on this branch
 
@@ -60,6 +64,9 @@ and says nothing about behaviour.
 | --- | --- | --- |
 | Boot, GSP firmware 570.133.07, modesetting | Tested on stock Haiku | Not yet run on Renga |
 | Vulkan through NVK (Mesa 26.2.2, X547 `nvrm-event-sync-r4` + patches 0001-0007) | Tested on stock Haiku | OpenCE through Zink runs |
+| Vulkan through NVK on Mesa 26.3 (`renga-26.3`) | Syntax-checked | All of NVK's C sources compile for Haiku with `mesa.sh` (two need `mesa_clc` and are skipped); not built with GCC or run |
+| H.264 video decode (Vulkan Video, `NVK_EXPERIMENTAL=video`) | Syntax-checked | NVDEC channels in the RM back end; `renga-test.sh run --video`; see `docs/VIDEO.md` |
+| Video encode (NVENC) | Not possible | No public interface; OBS and Sunshine encode on the CPU. See `docs/VIDEO.md` |
 | NVK patch 0008 (sync slot reuse, reset baseline) | Written | Host tests pass; not built for Haiku |
 | NVK patch 0009 (per-channel stall report) | Written | Host tests pass; not built for Haiku |
 | mesa-zink 0001 (pbuffers without a window) | Written | Not built for Haiku |
@@ -116,7 +123,7 @@ and says nothing about behaviour.
 | Area | State | Notes |
 | --- | --- | --- |
 | Build and run unchanged on Renga | Not started | First hardware step |
-| Mesa on a `renga` branch of `Techniix/mesa` (replacing `tools/patches/mesa-nvk`) | Done | Host tests pass against it; not built for Renga |
+| Mesa on a branch of `Techniix/mesa` (replacing `tools/patches/mesa-nvk`) | Done | Now `renga-26.3`; host tests pass against it; not built for Renga |
 | `eventfd`/`memfd_create`/`epoll` paths in NVK and the SDKs | Not started | |
 | Game mode hook | Blocked | Renga F-50 |
 | Graphics settings panel | Not started | |

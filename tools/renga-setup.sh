@@ -59,6 +59,16 @@ for t in "${tools[@]}"; do
 	have "$1" || missing+=("$2")
 done
 
+# Mesa 26.3 needs meson 1.5.0 or later.
+mesonOld=0
+if have meson; then
+	mv="$(meson --version 2>/dev/null)"
+	if [ "$(printf '%s\n1.5.0\n' "$mv" | sort -V | head -1)" != 1.5.0 ]; then
+		mesonOld=1
+		echo "meson $mv is older than 1.5.0, which Mesa 26.3 needs: pkgman update meson"
+	fi
+fi
+
 # Python's XML parser: Mesa's and libglvnd's generators parse the Khronos
 # XML registries with xml.etree, which needs pyexpat. If the python3
 # package was built against a newer libexpat than the one installed,
@@ -106,7 +116,7 @@ echo "Submodules:       $([ $submodulesOk = 1 ] && echo checked out || echo not 
 echo "libglvnd:         $([ $glvndOk = 1 ] && echo built || echo not built)"
 echo "libclc, SPIRV-LLVM-Translator: $([ $clcOk = 1 ] && echo built || echo not built)"
 
-if [ ${#missing[@]} -eq 0 ] && [ ${#pyMissing[@]} -eq 0 ] && [ $llvmOk = 1 ] &&
+if [ ${#missing[@]} -eq 0 ] && [ ${#pyMissing[@]} -eq 0 ] && [ $llvmOk = 1 ] && [ $mesonOld = 0 ] &&
 		[ $submodulesOk = 1 ] && [ $glvndOk = 1 ] && [ $clcOk = 1 ]; then
 	echo; echo "Everything needed to build is in place."
 	exit 0
@@ -125,6 +135,9 @@ fail() { echo "renga-setup: $*" >&2; exit 1; }
 
 if [ ${#missing[@]} -gt 0 ]; then
 	pkgman install -y "${missing[@]}" || fail "pkgman could not install: ${missing[*]}"
+fi
+if [ $mesonOld = 1 ]; then
+	pkgman update -y meson || fail "could not update meson to 1.5.0 or later"
 fi
 if [ $llvmOk = 0 ]; then
 	# The newest LLVM set in the repositories; build-clc-deps.sh matches it.

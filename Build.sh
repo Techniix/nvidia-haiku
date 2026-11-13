@@ -84,11 +84,22 @@ function buildProject {
 	local reconfigure=()
 	if [ -f "$buildDir/meson-private/coredata.dat" ]; then
 		reconfigure=(--reconfigure)
+		# A new release of the project (mesa-nvk moving from 26.2 to 26.3)
+		# changes generated files and options enough that reusing the old
+		# configuration is not safe: start that build directory over.
+		if [ -f "$dir/VERSION" ] &&
+				[ "$(cat "$buildDir/.quasar-source-version" 2>/dev/null)" != "$(cat "$dir/VERSION")" ]; then
+			echo "$projectName: version changed to $(cat "$dir/VERSION"), configuring from scratch"
+			reconfigure=(--wipe)
+		fi
 	fi
 
 	meson setup "${reconfigure[@]}" "$buildDir" \
 		-Dpkg_config_path="$pcPath" \
 		-Dprefix="$installDir" "${buildTypeArgs[@]}" "${args[@]}"
+	if [ -f "$dir/VERSION" ]; then
+		cp "$dir/VERSION" "$buildDir/.quasar-source-version"
+	fi
 
 	ninja -C "$buildDir"
 	ninja -C "$buildDir" install
@@ -150,9 +161,10 @@ if [ -n "$(projectDir mesa-nvk)" ] && [ ! -e "$clcDeps/share/pkgconfig/libclc.pc
 	echo "libclc not found: run tools/build-clc-deps.sh first (NVK needs it to build)." >&2
 	exit 1
 fi
-# mesa-nvk needs no patch step on this branch: the submodule is the "renga"
-# branch of Techniix/mesa, where the former tools/patches/mesa-nvk series are
-# ordinary commits on top of X547's nvrm-event-sync-r4.
+# mesa-nvk needs no patch step on this branch: the submodule is the
+# "renga-26.3" branch of Techniix/mesa, where X547's Haiku port and the
+# former tools/patches/mesa-nvk series are ordinary commits on top of Mesa
+# 26.3 (see the first commit after upstream's 26.3 on that branch).
 
 # Newer NVK (X547's event-sync branch) takes the NVIDIA tree and release as
 # options and refuses to start against a kernel driver from another release.
@@ -167,6 +179,7 @@ buildProject mesa-nvk "${nvkArgs[@]}" \
 	-Dpkg_config_path="$clcDeps/share/pkgconfig:$clcDeps/lib/pkgconfig:/boot/data/packages/llvm-project/build-libclc.x86_64/install/share/pkgconfig:/boot/data/packages/SPIRV-LLVM-Translator/build.x86_64/install/lib/pkgconfig:/boot/data/packages/Vulkan/SPIRV-Tools/build.x86_64/install/lib/pkgconfig" \
 	-Dgallium-drivers= \
 	-Dvulkan-drivers=nouveau \
+	-Dvideo-codecs=all_free,h264dec \
 	-Dplatforms=wayland \
 	-Dgallium-rusticl=false \
 	-Degl=disabled \

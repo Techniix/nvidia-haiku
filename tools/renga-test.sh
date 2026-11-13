@@ -10,10 +10,14 @@
 #       install it. Turns on the driver's verbose log for the test session.
 #       Reboot afterwards.
 #
-#   tools/renga-test.sh run [--obs /path/to/obs/bin] [--skip-tests]
+#   tools/renga-test.sh run [--obs /path/to/obs/bin] [--skip-tests] [--video]
 #       After the reboot: collect system state, run the GPU tests and the OBS
 #       reproduction, and pack everything into ~/quasar-report-<date>.zip.
 #       That one file is what to send back.
+#       --video also decodes a short H.264 clip on the GPU (NVK's
+#       experimental Vulkan Video, NVK_EXPERIMENTAL=video) with FFmpeg. Kept
+#       separate because a GPU decoder fault can hang the machine; run it
+#       last, after the rest of the session is in the report.
 #
 #   tools/renga-test.sh collect
 #       Only collect logs and state (after a freeze and reboot, for example).
@@ -209,6 +213,7 @@ do_build() {
 	step host-sync-pool 300 "$base/tests/sync-pool/run.sh"
 	step host-chan-report 300 "$base/tests/chan-report/run.sh"
 	step host-renga-wsi-layer 300 "$base/tests/renga-wsi-layer/run.sh"
+	step host-accelerant-cursor 300 "$base/tests/accelerant-cursor/run.sh"
 
 	say "Making the package"
 	local pkgArgs=()
@@ -287,11 +292,12 @@ obs_probe_matrix() {
 }
 
 do_run() {
-	local obsDir="" skipTests=0
+	local obsDir="" skipTests=0 video=0
 	while [ $# -gt 0 ]; do
 		case "$1" in
 			--obs) obsDir="$2"; shift 2 ;;
 			--skip-tests) skipTests=1; shift ;;
+			--video) video=1; shift ;;
 			*) echo "unknown option: $1" >&2; exit 2 ;;
 		esac
 	done
@@ -309,6 +315,14 @@ do_run() {
 		else
 			echo "FAIL     tests-build" >>"$report/summary.txt"
 		fi
+	fi
+
+	# What NVK offers with its experimental video decode turned on: the
+	# video queue family and VK_KHR_video_decode_h264 should appear. Only
+	# device enumeration; no video work is submitted.
+	if have vulkaninfo; then
+		NVK_EXPERIMENTAL=video NVK_NVRM_DEBUG=1 \
+			with_timeout 60 "$report/vulkaninfo-video.txt" vulkaninfo || true
 	fi
 
 	# OBS: its own driver probe first, then the real program.
@@ -362,6 +376,58 @@ do_run() {
 
 	# State again after the tests: new syslog lines and crash reports.
 	report="$report/after" collect_state
+	pack_report
+
+	# Last, and only on request: GPU video decode can hang the machine, and
+	# the report above is already packed if it does.
+	[ $video = 1 ] && run_video_decode
+}
+
+# H.264 decode through NVK's Vulkan Video with FFmpeg's Vulkan hwaccel,
+# checked frame by frame against FFmpeg's software decoder: the frames,
+# brought back as NV12, must have the same checksums.
+run_video_decode() {
+	say "Video decode (NVK_EXPERIMENTAL=video)"
+	local dir="$report/video"
+	mkdir -p "$dir"
+	if ! have ffmpeg; then
+		echo "SKIPPED  video-decode (ffmpeg not installed)" >>"$report/summary.txt"
+		pack_report; return
+	fi
+	ffmpeg -hide_banner -hwaccels >"$dir/hwaccels.txt" 2>&1
+	if ! grep -qx "vulkan" "$dir/hwaccels.txt"; then
+		echo "SKIPPED  video-decode (this ffmpeg has no Vulkan hwaccel)" >>"$report/summary.txt"
+		pack_report; return
+	fi
+	# A clip made here, so no file needs to be sent along: 3 s of FFmpeg's
+	# test pattern at 1280x720, with whichever H.264 encoder is built in.
+	local enc=""
+	for e in libx264 libopenh264; do
+		ffmpeg -hide_banner -h encoder=$e 2>/dev/null | grep -q "^Encoder $e" && { enc=$e; break; }
+	done
+	if [ -z "$enc" ] || ! with_timeout 120 "$dir/make-clip.txt" ffmpeg -y -hide_banner \
+			-f lavfi -i testsrc2=size=1280x720:rate=30 -t 3 -c:v $enc \
+			-pix_fmt yuv420p "$dir/clip.mp4"; then
+		echo "SKIPPED  video-decode (could not make an H.264 clip; encoder: ${enc:-none})" >>"$report/summary.txt"
+		pack_report; return
+	fi
+	with_timeout 120 "$dir/software.txt" ffmpeg -y -hide_banner -i "$dir/clip.mp4" \
+		-vf format=nv12 -f framemd5 "$dir/software.framemd5"
+	NVK_EXPERIMENTAL=video NVK_NVRM_DEBUG=1 step video-decode 120 \
+		ffmpeg -y -hide_banner -init_hw_device vulkan=gpu -filter_hw_device gpu \
+		-hwaccel vulkan -hwaccel_output_format vulkan -i "$dir/clip.mp4" \
+		-vf hwdownload,format=nv12 -f framemd5 "$dir/vulkan.framemd5"
+	cp "$report/video-decode.txt" "$dir/" 2>/dev/null
+	if [ -s "$dir/vulkan.framemd5" ] && [ -s "$dir/software.framemd5" ]; then
+		if diff <(grep -v '^#' "$dir/software.framemd5" | awk -F, '{print $NF}') \
+				<(grep -v '^#' "$dir/vulkan.framemd5" | awk -F, '{print $NF}') \
+				>"$dir/framemd5.diff"; then
+			echo "PASS     video-decode-matches-software" >>"$report/summary.txt"
+		else
+			echo "FAIL     video-decode-matches-software ($(grep -c '^<' "$dir/framemd5.diff") frames differ)" >>"$report/summary.txt"
+		fi
+	fi
+	report="$report/after-video" collect_state
 	pack_report
 }
 
