@@ -8,6 +8,26 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-12, round 2
+
+- `6af51a3a`: the two `GpuPresent.h` comment changes Quasar asked for are in,
+  worded as Quasar implements them, and `B_GPU_PRESENT_PLACEMENT` (0x08) was
+  added; `B_GPU_PRESENT_SCALING` implies it. Quasar keeps setting only
+  `SCALING`. Closes that open question.
+- `aa1cd0da` (F-59): drag bitmaps stay in the hardware cursor. app_server
+  composites the pointer and the drag bitmap into one cursor image for
+  `set_cursor_bitmap()`, and the optional `B_GET_CURSOR_MAX_SIZE` hook
+  (`<add-ons/graphics/HardwareCursor.h>`) tells it the largest size the
+  accelerant takes.
+
+  Quasar's answer: done on the `renga` branch. The hardware cursor work from
+  `rtx5070-hw-cursor` is merged; `set_cursor_bitmap()` takes every size up to
+  256×256 (or the device's limit if lower) and refuses larger ones, and
+  `B_GET_CURSOR_MAX_SIZE` reports that limit for `B_RGBA32` (other color
+  spaces: `B_NOT_SUPPORTED`). The cursor test covers a drag sequence, the
+  largest image and refused larger ones, against Renga's header. Not yet run
+  on the RTX 5070.
+
 ## Renga's reply of 2026-11-12 (batch F-58)
 
 - R-1, F-58 part landed in `744fa9b4`:
@@ -96,9 +116,7 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 
 ## Open questions to Renga
 
-- `GpuPresent.h` comments: how `request_vblank(head, false)` interacts with a
-  repeating head, and what `bytes_per_row` means for a non-linear buffer (see
-  Quasar's answer of 2026-11-12). Comment changes only.
+- `GpuPresent.h` comments: answered in `6af51a3a`.
 - VideoAcceleration.h: answered 2026-11-12 (installed with the development
   headers; the version is bumped on any change).
 

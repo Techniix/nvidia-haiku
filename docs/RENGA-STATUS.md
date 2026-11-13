@@ -70,7 +70,7 @@ about behaviour.
 | --- | --- | --- |
 | Mode list, mode setting, EDID | Tested on stock Haiku | High refresh rates and all reported modes not verified |
 | DPMS on/off | Written | Present in the accelerant; not verified |
-| Hardware cursor | Written | Hooks present in the accelerant; not verified on this branch |
+| Hardware cursor | Host-tested | From `rtx5070-hw-cursor`; drag images up to 256×256 and Renga's `B_GET_CURSOR_MAX_SIZE` (`aa1cd0da`); fake-NVKMS test passes; not yet run on the RTX 5070 with Renga's drag change |
 | Page flips with completion events (R-1 driver half) | Syntax-checked | `accelerant/NvPresent.cpp`, `headers/GpuPresent.h`: buffer import from an NVK memory descriptor (linear and block-linear), flips on any layer with position and scaling, completion through NVKMS notifiers and the modeset event queue, scanout export. Not run; app_server does not call it yet |
 | Vblank events | Syntax-checked | `nvkms_get_per_open_data()` implemented (KmsDevice.cpp), so `NVKMS_IOCTL_NOTIFY_VBLANK` and the surface-grant and swap-group ioctls can resolve their second descriptor. `request_vblank` opens a one-shot descriptor per request; a helper thread merges vblank and flip events into one eventfd |
 | Multihead, DisplayPort MST | Not started | app_server side is Renga F-38 |
