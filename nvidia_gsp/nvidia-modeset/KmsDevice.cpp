@@ -20,19 +20,14 @@ extern status_t user_fd_kernel_ioctl(int fd, unsigned op, void *buffer,
 	size_t length);
 
 #include "KmsDriver.h"
+#include "nvkms-haiku.h"
 
 
 #define CHECK_RET(err) {status_t _err = (err); if (_err < B_OK) return _err;}
 
 
-enum {
-	NV_HAIKU_KMS_BASE = B_DEVICE_OP_CODES_END + 1,
-
-	// Kernel-only: return the NvHaikuKmsDeviceHandle behind a descriptor.
-	// Far above the NVKMS ioctl numbers (below 0x100), which are passed on
-	// to nvKmsIoctl() as base + NVKMS_IOCTL_*.
-	NV_HAIKU_KMS_GET_HANDLE = NV_HAIKU_KMS_BASE + 0x10000,
-};
+// NV_HAIKU_KMS_BASE and Haiku's own ops are in nvkms-haiku.h, shared with
+// the accelerant.
 
 
 // Every open modeset handle. PerOpenDataFromFd() accepts a handle only if
@@ -95,8 +90,42 @@ void NvHaikuKmsDeviceHandle::EventQueueChanged(NvBool eventsAvailable)
 	MutexLocker _(&fSelectPoolMutex);
 	fEventsAvailable = eventsAvailable;
 	if (fEventsAvailable) {
+		// For a unicast event descriptor every call is one notification
+		// (nvSendUnicastEvent()); count them for
+		// NV_HAIKU_KMS_TAKE_UNICAST_EVENTS. For an ordinary descriptor
+		// the count is never read.
+		fUnicastCount++;
+		fUnicastTime = system_time();
 		notify_select_event_pool(fSelectPool, B_SELECT_READ);
 	}
+}
+
+
+// NVKMS never marks a unicast descriptor not readable: upstream, a
+// notification is the last thing that happens to it. A repeating vblank
+// request needs the reader to consume each one, so this reports and resets
+// the count and clears readability until the next notification. Answered
+// without the driver lock, like NV_HAIKU_KMS_GET_HANDLE: it only touches
+// this handle's own state.
+status_t NvHaikuKmsDeviceHandle::TakeUnicastEvents(void *data, size_t len)
+{
+	if (len != sizeof(nv_haiku_kms_unicast_events))
+		return B_BAD_VALUE;
+	nv_haiku_kms_unicast_events events {};
+	{
+		MutexLocker _(&fSelectPoolMutex);
+		events.count = fUnicastCount;
+		events.time = fUnicastTime;
+		fUnicastCount = 0;
+		fEventsAvailable = false;
+	}
+	if (IS_USER_ADDRESS(data)) {
+		if (user_memcpy(data, &events, sizeof(events)) != B_OK)
+			return B_BAD_ADDRESS;
+	} else {
+		memcpy(data, &events, sizeof(events));
+	}
+	return B_OK;
 }
 
 status_t NvHaikuKmsDeviceHandle::Close()
@@ -119,6 +148,8 @@ status_t NvHaikuKmsDeviceHandle::Control(uint32 op, void *data, size_t len)
 		*(NvHaikuKmsDeviceHandle**)data = this;
 		return B_OK;
 	}
+	if (op == NV_HAIKU_KMS_TAKE_UNICAST_EVENTS)
+		return TakeUnicastEvents(data, len);
 
 	uint32 cmd = op - NV_HAIKU_KMS_BASE;
 

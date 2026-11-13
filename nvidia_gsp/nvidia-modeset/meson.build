@@ -5,6 +5,7 @@ lib_nvidia_gsp_modeset = shared_library('nvidia_gsp_modeset',
 	'TimerQueue.cpp',
 	include_directories: [
 		'..',
+		'../../nvrm_sdk',	# nvkms-haiku.h, shared with the accelerant
 
 		'/boot/system/develop/headers/private',
 		'/boot/system/develop/headers/private/shared',

@@ -32,6 +32,12 @@ private:
 	mutex fSelectPoolMutex = MUTEX_INITIALIZER("NvHaikuSelectPool");
 	select_sync_pool* fSelectPool {};
 	bool fEventsAvailable = false;
+	// Unicast event notifications not yet taken, and when the newest came;
+	// see TakeUnicastEvents(). fSelectPoolMutex.
+	uint32 fUnicastCount = 0;
+	bigtime_t fUnicastTime = 0;
+
+	status_t TakeUnicastEvents(void *data, size_t len);
 
 public:
 	~NvHaikuKmsDeviceHandle();

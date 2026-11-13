@@ -118,7 +118,7 @@ private:
 		const gpu_flip_params &params);	// fLock held
 	void CompleteFlipNow(uint32 head, uint32 plane, PlaneState &state,
 		uint64 userData);	// fLock held
-	status_t ArmVblank(uint32 head);	// fLock held
+	status_t ArmVblank(uint32 head, bool repeat);	// fLock held
 
 	Context fContext;
 	std::mutex fLock;
@@ -143,6 +143,7 @@ private:
 	struct PendingVblank {
 		int fd;
 		uint32 head;
+		bool repeating;	// NVKMS keeps notifying fd at every vblank
 	};
 	std::vector<PendingVblank> fPendingVblanks;	// fLock
 	std::vector<bool> fRepeatVblank;	// per head, fLock

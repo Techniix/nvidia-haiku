@@ -623,16 +623,20 @@ NvPresent::RequestVblank(uint32 head, bool repeat)
 		if (it.head == head)
 			return B_OK;	// the next one is already requested
 	}
-	status_t status = ArmVblank(head);
+	status_t status = ArmVblank(head, repeat);
 	if (status == B_OK)
 		Wake();
 	return status;
 }
 
 
-// Ask NVKMS for one vblank event on a head. fLock held.
+// Ask NVKMS for vblank events on a head: one, or (repeat) one at every
+// vblank until the descriptor is closed, through Quasar's NVKMS extension
+// NvKmsNotifyVblankRequest::repeat. A repeating head costs one descriptor
+// for as long as it repeats, instead of an open() and an ioctl per frame.
+// fLock held.
 status_t
-NvPresent::ArmVblank(uint32 head)
+NvPresent::ArmVblank(uint32 head, bool repeat)
 {
 	// A fresh open of the modeset device, used only as the event's target.
 	// It must be opened by this team: the kernel resolves it in the caller's
@@ -646,12 +650,13 @@ NvPresent::ArmVblank(uint32 head)
 	params.request.dispHandle = fContext.disp;
 	params.request.head = head;
 	params.request.unicastEvent.fd = fd;
+	params.request.repeat = repeat;
 	if (fContext.kms->Control(NVKMS_IOCTL_NOTIFY_VBLANK, &params,
 			sizeof(params)) < 0) {
 		close(fd);
 		return B_ERROR;
 	}
-	fPendingVblanks.push_back({fd, head});
+	fPendingVblanks.push_back({fd, head, repeat});
 	return B_OK;
 }
 
@@ -733,26 +738,49 @@ NvPresent::EventThread()
 		for (size_t i = 0; i < pending.size(); i++) {
 			if ((fds[i + 2].revents & (POLLIN | POLLERR | POLLHUP)) == 0)
 				continue;
-			gpu_present_event event {};
-			event.type = B_GPU_EVENT_VBLANK;
-			event.head = pending[i].head;
-			event.time = system_time();
-			fEvents.push_back(event);
-			signal = true;
-			close(pending[i].fd);
-			for (auto it = fPendingVblanks.begin(); it != fPendingVblanks.end(); ++it) {
-				if (it->fd == pending[i].fd) {
-					fPendingVblanks.erase(it);
-					break;
-				}
+			// The kernel counts notifications and records when the newest
+			// arrived (NV_HAIKU_KMS_TAKE_UNICAST_EVENTS), which also makes
+			// the descriptor not readable until the next one. One event per
+			// wakeup: if vblanks went by while this thread was late, the
+			// client gets the newest, as a vblank event means "a vblank has
+			// happened", not a count.
+			nv_haiku_kms_unicast_events taken {};
+			if (ioctl(pending[i].fd, NV_HAIKU_KMS_TAKE_UNICAST_EVENTS, &taken,
+					sizeof(taken)) != 0) {
+				// The descriptor is broken (POLLERR or POLLHUP): drop it.
+				taken.count = 0;
 			}
-			// NVKMS's vblank request is one-shot: re-arm for a repeating
-			// head. The event lands at the following vblank as long as this
-			// runs within a frame of the last one.
-			if (fRepeatVblank[event.head] && ArmVblank(event.head) != B_OK) {
-				debug_printf("[!] NvPresent: could not re-arm vblank events "
-					"on head %" B_PRIu32 "\n", event.head);
-				fRepeatVblank[event.head] = false;
+			const uint32 head = pending[i].head;
+			if (taken.count > 0) {
+				gpu_present_event event {};
+				event.type = B_GPU_EVENT_VBLANK;
+				event.head = head;
+				event.time = taken.time;
+				fEvents.push_back(event);
+				signal = true;
+			}
+			// A repeating descriptor stays while the head repeats. A one-shot
+			// one is finished (NVKMS unregistered it), and so is a repeating
+			// one the client stopped: request_vblank(head, false) asks for
+			// one more event, which this was.
+			const bool keep = taken.count > 0 && pending[i].repeating
+				&& fRepeatVblank[head];
+			if (!keep) {
+				close(pending[i].fd);
+				for (auto it = fPendingVblanks.begin();
+						it != fPendingVblanks.end(); ++it) {
+					if (it->fd == pending[i].fd) {
+						fPendingVblanks.erase(it);
+						break;
+					}
+				}
+				// The head was switched to repeating while a one-shot
+				// request was outstanding.
+				if (fRepeatVblank[head] && ArmVblank(head, true) != B_OK) {
+					debug_printf("[!] NvPresent: could not request vblank "
+						"events on head %" B_PRIu32 "\n", head);
+					fRepeatVblank[head] = false;
+				}
 			}
 		}
 		const size_t waitBase = 2 + pending.size();

@@ -8,6 +8,21 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-13, round 2
+
+- R-16 accepted as the GPU stage's Vulkan surface design, as specified
+  (`BPrivate::GpuSurface`; scan-out or GPU composition, no layer or CPU
+  copy). The extension name stays provisional until agreed with X547.
+- R-17 accepted in Renga's current batch: `eventfd()` in libroot with
+  `<sys/eventfd.h>` in the default path; `user_fd_kernel_ioctl()`'s
+  definition matched to the header, with the commit to be named so Quasar
+  drops its declarations in the same step; Renga images carry
+  `haiku_devel` with the new headers from the image after that batch, to be
+  named. Quasar keeps its copies until then.
+- The R-1 amendment accepted as proposed, going into the provisional header
+  in the same step as R-17.
+- R-6 to R-15: not answered yet.
+
 ## Renga's notes of 2026-11-13
 
 - FFmpeg with Vulkan: Renga builds its own FFmpeg 6.1.6 with
@@ -153,9 +168,9 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 | R-13 | GPU monitoring interface (temperature, clocks, load, VRAM) | Proposed, P2 | GPU stage |
 | R-14 | Hardware video decode in the Media Kit | Proposed, P2 (FFmpeg with Vulkan accepted) | GPU stage |
 | R-15 | Monitor brightness (DDC/CI), HDR and 10-bit output | Proposed, P3 | later |
-| R-16 | Native Vulkan window surface: buffers presented through app_server | Proposed, P1 | GPU stage |
-| R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Proposed, P1 | any |
-| R-1 amendment | Flips wait on a GPU semaphore, not a file | Proposed, P1 | before the GPU stage fixes R-1 |
+| R-16 | Native Vulkan window surface: buffers presented through app_server | Accepted: GPU stage's Vulkan surface design | GPU stage |
+| R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Accepted: Renga's current batch (development packages) | current batch |
+| R-1 amendment | Flips wait on a GPU semaphore, not a file | Accepted as proposed: into the provisional header with R-17 | current batch |
 
 ## R-1 Accelerant extension
 

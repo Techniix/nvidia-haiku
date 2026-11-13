@@ -9,7 +9,7 @@
 [submodule "open-gpu-kernel-modules"]
 	path = open-gpu-kernel-modules
 	url = https://github.com/Techniix/open-gpu-kernel-modules.git
-	branch = 570.133.07-haiku
+	branch = 570.133.07-renga
 [submodule "VideoStreamsWsi"]
 	path = VideoStreamsWsi
 	url = https://github.com/X547/VideoStreamsWsi.git
