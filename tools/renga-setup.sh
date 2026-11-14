@@ -52,12 +52,20 @@ tools=(
 	"glslangValidator cmd:glslangValidator"
 	"zip cmd:zip"
 	"strings cmd:strings"
+	"vulkaninfo cmd:vulkaninfo"
 )
 missing=()
 for t in "${tools[@]}"; do
 	set -- $t
 	have "$1" || missing+=("$2")
 done
+
+# The Vulkan loader: NVK is an ICD, and applications (and the tests) load
+# it through libvulkan. Renga images from 2026.11.13-devel-vulkan don't
+# include the loader yet.
+if ! ls /boot/system/lib/libvulkan.so* /boot/home/config/non-packaged/lib/libvulkan.so* >/dev/null 2>&1; then
+	missing+=("lib:libvulkan")
+fi
 
 # Quasar builds against Renga's own headers: the GPU presentation and
 # cursor interfaces with the R-1 semaphore fields (Renga f6b8442e), eventfd in
