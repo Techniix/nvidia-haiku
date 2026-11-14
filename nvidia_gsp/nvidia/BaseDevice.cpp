@@ -13,11 +13,8 @@
 #include <util/AutoLock.h>
 #include <team.h>
 #include <vm/vm.h>
-//#include <fs/fd.h>
+#include <fs/fd.h>	// user_fd_kernel_ioctl(), C linkage since Renga 0b53eaf9
 #include <fs/select_sync_pool.h>
-
-extern status_t user_fd_kernel_ioctl(int fd, unsigned op, void *buffer,
-	size_t length);
 
 #include <kernel.h>
 

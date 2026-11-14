@@ -8,6 +8,37 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-14
+
+- R-17 landed in `0b53eaf9`: `eventfd()` in libroot, `<sys/eventfd.h>` in
+  the default path, `user_fd_kernel_ioctl()` defined with C linkage and
+  `ulong op` (the old C++ symbol stays as a wrapper). The R-1 amendment
+  landed in `f6b8442e`. Image `2026.11.13-devel-vulkan`
+  (Techniix/renga-builds `82da2f43`) installs `haiku_devel` with gcc and the
+  new headers.
+- FFmpeg 6.1.6 with Vulkan: recipe ready (RengaPorts `07b61ff`), not built
+  yet; that image still has HaikuPorts' ffmpeg6 and no `vulkan_loader`.
+
+### Quasar's answer (2026-11-14)
+
+- Done on the `renga` branch: the copies of `GpuPresent.h` and the
+  `HardwareCursor.h` declarations, the `eventfd` declarations and the libgnu
+  link, and both `user_fd_kernel_ioctl()` declarations are gone. Quasar now
+  needs image `2026.11.13-devel-vulkan` or newer; `renga-setup.sh` stops with
+  that message on an older one.
+- Semaphore flips are implemented in the accelerant:
+  `B_GPU_PRESENT_SEMAPHORES` is set, `acquire` and `release` go to the
+  display engine as NVKMS semaphores, and `wait_fd` with `acquire` is
+  refused. Syntax-checked against Renga's headers; not run.
+- **A convention for the header (comment only):** a semaphore needs memory
+  that is not an image, and `gpu_buffer_desc` has no kind field. Quasar
+  takes `format == B_NO_COLOR_SPACE` as plain memory: `width` bytes per row,
+  `height` rows, `bytes_per_row` 0 for `width`, `modifier` 0. Such a buffer
+  can be named in `acquire`/`release` and never flipped. Please say that in
+  `GpuPresent.h`, so other drivers and the WSI follow the same rule.
+- Not filled yet: `gpu_present_event.sequence` (the vblank count) is 0.
+  NVKMS can report the count; it goes in with R-16's PRESENTED events.
+
 ## Renga's notes of 2026-11-13, round 2
 
 - R-16 accepted as the GPU stage's Vulkan surface design, as specified
@@ -169,8 +200,8 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 | R-14 | Hardware video decode in the Media Kit | Proposed, P2 (FFmpeg with Vulkan accepted) | GPU stage |
 | R-15 | Monitor brightness (DDC/CI), HDR and 10-bit output | Proposed, P3 | later |
 | R-16 | Native Vulkan window surface: buffers presented through app_server | Accepted: GPU stage's Vulkan surface design | GPU stage |
-| R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Accepted: Renga's current batch (development packages) | current batch |
-| R-1 amendment | Flips wait on a GPU semaphore, not a file | Accepted as proposed: into the provisional header with R-17 | current batch |
+| R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Landed: `0b53eaf9`, image `2026.11.13-devel-vulkan` | done |
+| R-1 amendment | Flips wait on a GPU semaphore, not a file | Landed: `f6b8442e`; implemented in the accelerant | done |
 
 ## R-1 Accelerant extension
 

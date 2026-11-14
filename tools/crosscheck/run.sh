@@ -68,7 +68,7 @@ check() { # kind file
 		modeset) cmd+=("${kernel[@]}" "${nvinc[@]}" "${kmsinc[@]}" -I"$root/nvidia_gsp") ;;
 		vulkan)  cmd+=(-I"${VULKAN_HEADERS:-$root/mesa-nvk/include}" -Wall -Wextra) ;;
 		user)    cmd+=("${nvinc[@]}" "${kmsinc[@]}" -I"$root/nvrm_cpp_sdk"
-		               -I"$root/accelerant" -I"$root/headers" -I"$H/private/graphics/common"
+		               -I"$root/accelerant" -I"$H/private/graphics/common"
 		               -I"$H/private/shared" -I"$H/private/interface"
 		               -I"$H/private/app") ;;
 	esac

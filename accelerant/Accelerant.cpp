@@ -15,16 +15,8 @@
 #include "NvKmsBitmap.h"
 #include "NvPresent.h"
 
-// Renga's optional cursor size query (F-59, aa1cd0da). Declared here when
-// building against a tree without the header; the feature code and the
-// signature are fixed by Renga's header.
-#if __has_include(<add-ons/graphics/HardwareCursor.h>)
+// Renga's optional cursor size query, B_GET_CURSOR_MAX_SIZE (F-59, aa1cd0da).
 #include <add-ons/graphics/HardwareCursor.h>
-#else
-#define B_GET_CURSOR_MAX_SIZE	0x52474101
-typedef status_t (*get_cursor_max_size)(color_space space, uint16* maxWidth,
-	uint16* maxHeight);
-#endif
 
 #include <memory>
 
@@ -160,7 +152,7 @@ private:
 	uint32 fCursorRetryCountdown = 0;
 	static const uint32 kCursorRetryMoves = 64;
 
-	// GPU presentation (headers/GpuPresent.h), created on first request.
+	// GPU presentation (<add-ons/graphics/GpuPresent.h>), created on first request.
 	std::unique_ptr<NvPresent> fPresent;
 	bool fIsClone = false;
 

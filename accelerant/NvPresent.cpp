@@ -15,23 +15,7 @@
 #include <poll.h>
 #include <string.h>
 #include <unistd.h>
-// Renga's eventfd() is in libgnu, with its header in develop/headers/gnu.
-// If the include path misses that directory, declare what is used here
-// rather than fail: the declarations are Renga's (headers/compatibility/
-// gnu/sys/eventfd.h) and the functions come from libgnu at link time.
-#if __has_include(<sys/eventfd.h>)
-#include <sys/eventfd.h>
-#else
-#include <stdint.h>
-typedef uint64_t eventfd_t;
-#define EFD_CLOEXEC		O_CLOEXEC
-#define EFD_NONBLOCK	O_NONBLOCK
-extern "C" {
-int eventfd(unsigned int initialValue, int flags);
-int eventfd_read(int fd, eventfd_t *value);
-int eventfd_write(int fd, eventfd_t value);
-}
-#endif
+#include <sys/eventfd.h>	// libroot since Renga 0b53eaf9
 
 #include <ErrorUtils.h>
 
@@ -267,6 +251,10 @@ NvPresent::GetCaps(uint32 head, gpu_present_caps *caps)
 	// the flag says the driver can ask for it.
 	// UNVERIFIED on the RTX 5070: the layer count and window mode support.
 	caps->flags = B_GPU_PRESENT_VRR | B_GPU_PRESENT_ASYNC_FLIP;
+	// Semaphores are NISO surfaces in the same format as the completion
+	// notifiers, so they are there whenever the notifiers are.
+	if (fHaveNotifiers)
+		caps->flags |= B_GPU_PRESENT_SEMAPHORES;
 	for (uint32 layer = 1; layer < caps->planes_per_head; layer++) {
 		if (info.layerCaps[layer].supportsWindowMode) {
 			caps->flags |= B_GPU_PRESENT_SCALING;
@@ -285,6 +273,8 @@ NvPresent::ImportBuffer(const gpu_buffer_desc *desc, uint32 *_id)
 		|| desc->width == 0 || desc->height == 0
 		|| desc->width > 0xffff || desc->height > 0xffff)
 		return B_BAD_VALUE;
+	if (desc->format == B_NO_COLOR_SPACE)
+		return ImportSemaphoreBuffer(desc, _id);
 
 	NvKmsSurfaceMemoryFormat format;
 	switch (desc->format) {
@@ -368,6 +358,123 @@ NvPresent::ImportBuffer(const gpu_buffer_desc *desc, uint32 *_id)
 }
 
 
+// Memory for flip semaphores (R-1 amendment): a buffer described with
+// format B_NO_COLOR_SPACE is plain memory, width bytes per row, height
+// rows, at offset in the object; bytes_per_row 0 means width. It is
+// registered as NISO memory (8-bit "pixels", pitch layout), the kind NVKMS
+// requires for anything the display engine reads or writes besides images,
+// as the completion notifiers are. Such a buffer can only be named in
+// gpu_flip_params::acquire and ::release, never flipped.
+status_t
+NvPresent::ImportSemaphoreBuffer(const gpu_buffer_desc *desc, uint32 *_id)
+{
+	if (!fHaveNotifiers)
+		return B_NOT_SUPPORTED;	// no NISO format; caps say no semaphores
+	if (desc->modifier != 0)
+		return B_BAD_VALUE;
+	const uint64 rowBytes = desc->bytes_per_row != 0
+		? desc->bytes_per_row : desc->width;
+	if (rowBytes < desc->width)
+		return B_BAD_VALUE;
+	// NVKMS wants a pitch of whole 256-byte units, as for images; the
+	// object must be at least that big, or RM refuses the context DMA.
+	const uint64 pitch = (rowBytes + 255) / 256 * 256;
+
+	NvKmsRegisterSurfaceParams params {};
+	params.request.deviceHandle = fContext.kmsDev->Get();
+	params.request.useFd = true;
+	params.request.planes[0].u.fd = desc->handle;
+	params.request.planes[0].offset = desc->offset;
+	params.request.planes[0].pitch = pitch;
+	params.request.planes[0].rmObjectSizeInBytes = desc->offset
+		+ pitch * desc->height;
+	params.request.widthInPixels = desc->width;
+	params.request.heightInPixels = desc->height;
+	params.request.layout = NvKmsSurfaceMemoryLayoutPitch;
+	params.request.format = NvKmsSurfaceMemoryFormatI8;
+	params.request.isoType = NVKMS_MEMORY_NISO;
+
+	std::lock_guard<std::mutex> lock(fLock);
+	if (fContext.kms->Control(NVKMS_IOCTL_REGISTER_SURFACE, &params,
+			sizeof(params)) < 0)
+		return B_ERROR;
+
+	uint32 id = fNextId++;
+	if (fNextId == 0)
+		fNextId = 1;
+	Buffer &buffer = fBuffers[id];
+	buffer.surface = NvKmsSurface(*fContext.kmsDev, params.reply.surfaceHandle);
+	buffer.desc = *desc;
+	buffer.desc.handle = -1;	// not kept: the caller owns it
+	buffer.semaphore = true;
+	buffer.size = (uint64)desc->width * desc->height;
+	*_id = id;
+	return B_OK;
+}
+
+
+// A semaphore NVKMS can use: a semaphore buffer of ours, the 16-byte slot
+// inside it (NVKMS's four-word formats address semaphores in 32-bit words
+// with a 16-bit index). fLock held.
+status_t
+NvPresent::CheckSemaphore(const gpu_semaphore &semaphore) const
+{
+	if (semaphore.buffer < 0)
+		return B_OK;
+	auto it = fBuffers.find((uint32)semaphore.buffer);
+	if (it == fBuffers.end() || it->second.released || !it->second.semaphore)
+		return B_BAD_VALUE;
+	if (semaphore.offset % 16 != 0 || semaphore.offset / 4 > 0xffff
+		|| (uint64)semaphore.offset + 16 > it->second.size)
+		return B_BAD_VALUE;
+	return B_OK;
+}
+
+
+// Keep a flip's semaphore buffers while the display may use them. fLock held.
+void
+NvPresent::TakeSemaphores(PlaneState &state, const gpu_flip_params &params)
+{
+	const gpu_semaphore *semaphores[2] = { &params.acquire, &params.release };
+	for (int i = 0; i < 2; i++) {
+		state.pendingSemaphores[i] = 0;
+		if (semaphores[i]->buffer >= 0) {
+			uint32 id = (uint32)semaphores[i]->buffer;
+			fBuffers[id].useCount++;
+			state.pendingSemaphores[i] = id;
+		}
+	}
+}
+
+
+void
+NvPresent::DropSemaphores(uint32 (&ids)[2])
+{
+	for (uint32 &id : ids) {
+		if (id != 0)
+			DropBufferUse(id);
+		id = 0;
+	}
+}
+
+
+// The pending flip is on screen: its buffer and semaphores become the shown
+// ones, and the previous ones are no longer read. fLock held.
+void
+NvPresent::PromoteFlip(PlaneState &state)
+{
+	if (state.shown != 0)
+		DropBufferUse(state.shown);
+	state.shown = state.pending;
+	state.pending = 0;
+	DropSemaphores(state.shownSemaphores);
+	for (int i = 0; i < 2; i++) {
+		state.shownSemaphores[i] = state.pendingSemaphores[i];
+		state.pendingSemaphores[i] = 0;
+	}
+}
+
+
 status_t
 NvPresent::ReleaseBuffer(uint32 id)
 {
@@ -435,6 +542,31 @@ NvPresent::SubmitFlip(uint32 head, uint32 plane, NvKmsSurfaceHandle surface,
 		one.flip.allowVrr = (params->flags & B_GPU_FLIP_VRR) != 0;
 	}
 
+	if (params != nullptr
+		&& (params->acquire.buffer >= 0 || params->release.buffer >= 0)) {
+		// The display engine waits for the acquire value before the flip
+		// takes effect, and writes the release value once this flip's
+		// buffer is replaced on screen. Flip() checked both
+		// (CheckSemaphore()).
+		const gpu_semaphore *semaphores[2] = { &params->acquire,
+			&params->release };
+		struct NvKmsSemaphore *targets[2] = {
+			&layer.syncObjects.val.u.semaphores.acquire,
+			&layer.syncObjects.val.u.semaphores.release };
+		for (int i = 0; i < 2; i++) {
+			if (semaphores[i]->buffer < 0)
+				continue;
+			targets[i]->surface.surfaceHandle
+				= fBuffers[(uint32)semaphores[i]->buffer].surface.Get();
+			targets[i]->surface.format = fNotifierFormat;
+			targets[i]->surface.offsetInWords
+				= (NvU16)(semaphores[i]->offset / 4);
+			targets[i]->value = semaphores[i]->value;
+		}
+		layer.syncObjects.val.useSyncpt = false;
+		layer.syncObjects.specified = true;
+	}
+
 	if (withNotifier) {
 		layer.completionNotifier.val.surface.surfaceHandle = fNotifierSurface.Get();
 		layer.completionNotifier.val.surface.format = fNotifierFormat;
@@ -474,13 +606,23 @@ NvPresent::Flip(uint32 head, uint32 plane, uint32 id,
 		return B_BAD_VALUE;	// NVKMS sizes are 16-bit
 	if (params->source.x != 0 || params->source.y != 0)
 		return B_BAD_VALUE;	// NVKMS layers sample from the image origin
+	if (params->wait_fd >= 0 && params->acquire.buffer >= 0)
+		return B_BAD_VALUE;	// one way of waiting, not both (GpuPresent.h)
 
 	std::lock_guard<std::mutex> lock(fLock);
 	PlaneState *state = Plane(head, plane);
 	if (state == nullptr)
 		return B_BAD_VALUE;
 	auto it = fBuffers.find(id);
-	if (it == fBuffers.end() || it->second.released)
+	if (it == fBuffers.end() || it->second.released || it->second.semaphore)
+		return B_BAD_VALUE;
+	if (CheckSemaphore(params->acquire) != B_OK
+		|| CheckSemaphore(params->release) != B_OK)
+		return B_BAD_VALUE;
+	// Some display engines take acquire and release from one surface only.
+	if (params->acquire.buffer >= 0 && params->release.buffer >= 0
+		&& params->acquire.buffer != params->release.buffer
+		&& !fContext.kmsDev->Info().supportsIndependentAcqRelSemaphore)
 		return B_BAD_VALUE;
 	if (state->pending != 0)
 		return B_BUSY;	// one flip in flight per plane, as with KMS
@@ -502,6 +644,7 @@ NvPresent::Flip(uint32 head, uint32 plane, uint32 id,
 		it->second.useCount++;
 		state->pending = id;
 		state->pendingUserData = params->user_data;
+		TakeSemaphores(*state, *params);
 		state->waitFd = fd;
 		state->waitParams = *params;
 		state->waitParams.wait_fd = -1;
@@ -512,10 +655,12 @@ NvPresent::Flip(uint32 head, uint32 plane, uint32 id,
 	it->second.useCount++;
 	state->pending = id;
 	state->pendingUserData = params->user_data;
+	TakeSemaphores(*state, *params);
 	status_t status = StartFlip(head, plane, *state, *params);
 	if (status != B_OK) {
 		state->pending = 0;
 		DropBufferUse(id);
+		DropSemaphores(state->pendingSemaphores);
 	}
 	return status;
 }
@@ -563,10 +708,7 @@ NvPresent::CompleteFlipNow(uint32 head, uint32 plane, PlaneState &state,
 	event.user_data = userData;
 	event.time = system_time();
 	fEvents.push_back(event);
-	if (state.shown != 0)
-		DropBufferUse(state.shown);
-	state.shown = state.pending;
-	state.pending = 0;
+	PromoteFlip(state);
 	if (fSignalFd >= 0)
 		Signal();
 }
@@ -601,6 +743,8 @@ NvPresent::DisablePlane(uint32 head, uint32 plane)
 		DropBufferUse(state->pending);
 	state->shown = 0;
 	state->pending = 0;
+	DropSemaphores(state->shownSemaphores);
+	DropSemaphores(state->pendingSemaphores);
 	return B_OK;
 }
 
@@ -815,6 +959,7 @@ NvPresent::EventThread()
 				uint32 id = state->pending;
 				state->pending = 0;
 				DropBufferUse(id);
+				DropSemaphores(state->pendingSemaphores);
 			}
 		}
 		if (signal)
@@ -857,10 +1002,7 @@ NvPresent::DrainKmsEvents()
 		done.time = system_time();
 		fEvents.push_back(done);
 
-		if (state->shown != 0)
-			DropBufferUse(state->shown);
-		state->shown = state->pending;
-		state->pending = 0;
+		PromoteFlip(*state);
 	}
 }
 

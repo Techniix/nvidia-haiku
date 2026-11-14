@@ -59,6 +59,18 @@ for t in "${tools[@]}"; do
 	have "$1" || missing+=("$2")
 done
 
+# Quasar builds against Renga's own headers: the GPU presentation and
+# cursor interfaces with the R-1 semaphore fields (Renga f6b8442e), eventfd in
+# libroot, and user_fd_kernel_ioctl() with C linkage (0b53eaf9). Images from
+# 2026.11.13-devel-vulkan on have them, with haiku_devel installed.
+H=/boot/system/develop/headers
+if ! grep -qs B_GPU_PRESENT_SEMAPHORES "$H/os/add-ons/graphics/GpuPresent.h" ||
+		[ ! -f "$H/os/add-ons/graphics/HardwareCursor.h" ] ||
+		[ ! -f "$H/posix/sys/eventfd.h" ]; then
+	echo "renga-setup: this Renga image is too old for Quasar: it needs Renga image 2026.11.13-devel-vulkan or newer (GpuPresent.h with semaphores, HardwareCursor.h, eventfd in libroot). Update Renga, then run setup again." >&2
+	exit 1
+fi
+
 # Mesa 26.3 needs meson 1.5.0 or later.
 mesonOld=0
 if have meson; then

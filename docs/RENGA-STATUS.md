@@ -62,11 +62,11 @@ workarounds still in the tree, why each exists, and what removes it.
 | RengaWsi Vulkan layer, with VideoStreamsWsi's surface ABI (`VKLayerSurfaceBase`, `BitmapHook`) | Renga has no Vulkan window surface of its own | A native surface in Mesa's Renga WSI platform, presenting through app_server (R-16) | Renga GPU stage, then Mesa |
 | Swapchain images copied into a `BBitmap` on the CPU | app_server takes only bitmaps | Swapchain buffers given to app_server and flipped or composited on the GPU (R-1, R-12, R-16) | Renga GPU stage |
 | `QUASAR_WSI=videostreams` fallback | Safety while the Renga WSI is new | Removed with the layer | First row |
-| Flip `wait_fd` waited on by a helper thread in the accelerant | NVKMS can't wait on a file | The display engine waits on a GPU semaphore in the flip itself (R-1 amendment, 2026-11-13) | `GpuPresent.h` change, then Quasar and Mesa |
+| Flip `wait_fd` waited on by a helper thread in the accelerant | NVKMS can't wait on a file | Accelerant side done (syntax-checked): flips take `acquire`/`release` semaphores (Renga `f6b8442e`) and the display engine waits itself; `wait_fd` stays for fence-based drivers. The Renga WSI uses semaphores with R-16 | Mesa, with R-16 |
 | ~~One NVKMS file descriptor per vblank request, re-armed in user space~~ | NVKMS's vblank notification is one-shot per descriptor | Done (syntax-checked): NVKMS's `NOTIFY_VBLANK` takes `repeat` (`570.133.07-renga`), and the KMS device counts notifications for the reader; one descriptor per repeating head | — |
-| `eventfd` from libgnu, with declarations in the accelerant when the header isn't found | `eventfd()` isn't in libroot, and GCC doesn't search `develop/headers/gnu` | `eventfd()` in libroot with `<sys/eventfd.h>` (R-17) | Renga |
-| Quasar's own declaration of `user_fd_kernel_ioctl()` | Renga's header and definition disagree (C vs C++ linkage) | Fix in Renga, and Quasar includes `fs/fd.h` in the same step (R-17) | Renga, then Quasar |
-| Copies of `GpuPresent.h` and `HardwareCursor.h` declarations for older Renga trees | The test machine's Renga image may predate `744fa9b4` and `aa1cd0da` | Removed once Renga confirms the image the next test uses has both (R-17) | Renga's answer |
+| ~~`eventfd` from libgnu, with fallback declarations~~ | | Removed: `eventfd()` is in libroot (Renga `0b53eaf9`) | — |
+| ~~Quasar's own declarations of `user_fd_kernel_ioctl()`~~ | | Removed: `<fs/fd.h>` is right since Renga `0b53eaf9` | — |
+| ~~Copies of `GpuPresent.h` and `HardwareCursor.h`~~ | | Removed: Renga images from `2026.11.13-devel-vulkan` install both; `renga-setup.sh` checks for them | — |
 | CPU waits in NVK's RM sync code use OS event objects and timed polling | No futex | `futex()` (R-3) | Renga F-49 |
 | Doorbells rung again after a 3 s CPU stall | Recovery and diagnosis for a lost-doorbell bug | Removed once a hardware run shows the submit fences prevent it | A hardware run |
 
@@ -114,7 +114,7 @@ and (with R-6) hot-plug is the interface R-1 defines.
 | Mode list, mode setting, EDID | Tested on stock Haiku | High refresh rates and all reported modes not verified |
 | DPMS on/off | Written | Present in the accelerant; not verified |
 | Hardware cursor | Host-tested | From `rtx5070-hw-cursor`; drag images up to 256×256 and Renga's `B_GET_CURSOR_MAX_SIZE` (`aa1cd0da`); fake-NVKMS test passes; not yet run on the RTX 5070 with Renga's drag change |
-| Page flips with completion events (R-1 driver half) | Syntax-checked | `accelerant/NvPresent.cpp`, `headers/GpuPresent.h`: buffer import from an NVK memory descriptor (linear and block-linear), flips on any layer with position and scaling, completion through NVKMS notifiers and the modeset event queue, scanout export. Not run; app_server does not call it yet |
+| Page flips with completion events (R-1 driver half) | Syntax-checked | `accelerant/NvPresent.cpp` against Renga's `<add-ons/graphics/GpuPresent.h>`: buffer import from an NVK memory descriptor (linear and block-linear), flips on any layer with position and scaling, completion through NVKMS notifiers and the modeset event queue, scanout export. Not run; app_server does not call it yet |
 | Vblank events | Syntax-checked | `nvkms_get_per_open_data()` implemented (KmsDevice.cpp), so `NVKMS_IOCTL_NOTIFY_VBLANK` and the surface-grant and swap-group ioctls can resolve their second descriptor. `request_vblank` opens a one-shot descriptor per request; a helper thread merges vblank and flip events into one eventfd |
 | Multihead, DisplayPort MST | Not started | app_server side is Renga F-38 |
 | Variable refresh rate | Not started | |

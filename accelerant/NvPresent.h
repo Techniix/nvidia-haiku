@@ -19,7 +19,7 @@
  *
  * A helper thread waits on the modeset descriptor and the pending vblank
  * descriptors, turns what it sees into gpu_present_events, and signals one
- * eventfd (Renga's libgnu). event_fd() returns that eventfd, so app_server
+ * eventfd. event_fd() returns that eventfd, so app_server
  * waits on a single descriptor for both kinds of event, in epoll with its
  * other sources.
  */
@@ -37,15 +37,7 @@
 #include <NvKmsDevice.h>
 #include <NvKmsSurface.h>
 
-// Renga installs the interface as <add-ons/graphics/GpuPresent.h> (F-58,
-// 744fa9b4). headers/GpuPresent.h is a verbatim copy of it, for building
-// against a Renga tree from before that commit; both use the same include
-// guard, so only one is ever seen.
-#if __has_include(<add-ons/graphics/GpuPresent.h>)
 #include <add-ons/graphics/GpuPresent.h>
-#else
-#include <GpuPresent.h>
-#endif
 
 
 class NvPresent {
@@ -88,6 +80,11 @@ private:
 		gpu_buffer_desc desc;
 		uint32 useCount = 0;	// flips that may still show it
 		bool released = false;
+		// Semaphore memory (desc.format B_NO_COLOR_SPACE): registered with
+		// NVKMS as NISO memory for the display engine to read and write, and
+		// never scanned out. size is its usable length in bytes.
+		bool semaphore = false;
+		uint64 size = 0;
 	};
 
 	struct PlaneState {
@@ -100,6 +97,12 @@ private:
 		// descriptor, closed by the helper thread or DisablePlane().
 		int waitFd = -1;
 		gpu_flip_params waitParams {};
+		// Semaphore buffers (acquire, release) of the pending and of the
+		// shown flip, kept alive while the display may use them: the
+		// release semaphore is written when the shown buffer is replaced,
+		// so it lives until the flip after it completes. 0 = none.
+		uint32 pendingSemaphores[2] = {};
+		uint32 shownSemaphores[2] = {};
 	};
 
 	void SetUpNotifiers();
@@ -118,6 +121,11 @@ private:
 		const gpu_flip_params &params);	// fLock held
 	void CompleteFlipNow(uint32 head, uint32 plane, PlaneState &state,
 		uint64 userData);	// fLock held
+	status_t ImportSemaphoreBuffer(const gpu_buffer_desc *desc, uint32 *_id);
+	status_t CheckSemaphore(const gpu_semaphore &semaphore) const;	// fLock held
+	void TakeSemaphores(PlaneState &state, const gpu_flip_params &params);
+	void DropSemaphores(uint32 (&ids)[2]);			// fLock held
+	void PromoteFlip(PlaneState &state);			// fLock held
 	status_t ArmVblank(uint32 head, bool repeat);	// fLock held
 
 	Context fContext;
