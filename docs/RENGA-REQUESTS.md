@@ -8,6 +8,22 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-15 and 2026-11-19
+
+- `2ca4e1f9`: the plain-memory (`B_NO_COLOR_SPACE`) convention is
+  documented in `GpuPresent.h`.
+- Image `2026.11.15-batch2-midway`: `libwayland-egl` and `libwayland-cursor`
+  in `renga_wayland`.
+- 2026-11-19: `linux-dmabuf` v4, `linux-drm-syncobj` and the rest of the GPU
+  stage continue in the next batch; Renga needs Quasar's buffer import and
+  sync object interfaces working on the RTX 5070 first.
+
+### Quasar's answer (2026-11-19)
+
+- Buffer import is implemented (R-1 driver half) and waits for its first
+  hardware run, together with the OBS fix, the cursor and Mesa 26.3.
+- A sync object interface was never specified. It is R-18 below.
+
 ## Renga's notes of 2026-11-14
 
 - R-17 landed in `0b53eaf9`: `eventfd()` in libroot, `<sys/eventfd.h>` in
@@ -201,7 +217,8 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 | R-15 | Monitor brightness (DDC/CI), HDR and 10-bit output | Proposed, P3 | later |
 | R-16 | Native Vulkan window surface: buffers presented through app_server | Accepted: GPU stage's Vulkan surface design | GPU stage |
 | R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Landed: `0b53eaf9`, image `2026.11.13-devel-vulkan` | done |
-| R-1 amendment | Flips wait on a GPU semaphore, not a file | Landed: `f6b8442e`; implemented in the accelerant | done |
+| R-1 amendment | Flips wait on a GPU semaphore, not a file | Landed: `f6b8442e` (plain-memory comment `2ca4e1f9`); implemented in the accelerant | done |
+| R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Proposed, P1 | GPU stage |
 
 ## R-1 Accelerant extension
 
@@ -744,6 +761,76 @@ agreed with X547) and the layer is removed.
   `<add-ons/graphics/GpuPresent.h>` (`744fa9b4`) and
   `<add-ons/graphics/HardwareCursor.h>` (`aa1cd0da`) installed. Once it
   does, Quasar drops its copies and builds against Renga's headers only.
+
+### R-18 Timeline sync objects (P1)
+
+`linux-drm-syncobj` passes timeline sync objects between a client and the
+compositor: the client's GPU signals point N when a frame is rendered, the
+compositor waits for it (on the CPU to composite, or in the display engine
+to flip), and signals a release point when it is done with the buffer.
+Mesa's Wayland WSI, Chromium and Xwayland-style clients drive it through
+DRM syncobj file descriptors. `GpuSurface` (R-16) needs the same between an
+application and app_server.
+
+Proposal: one vendor-neutral kernel object with DRM syncobj semantics,
+provided by Renga, and GPU-backed points provided by each driver.
+
+**Renga side (kernel):** a `syncobj` module with the semantics of DRM
+syncobjs, reachable from user space as file descriptors, so the protocol
+code can stay as it is on Linux:
+
+- binary and timeline syncobjs; create, destroy, export to and import from
+  an fd (`HANDLE_TO_FD`/`FD_TO_HANDLE`), import and export of a single point
+  as a `sync_file` fd;
+- `TIMELINE_WAIT` (any or all, absolute timeout, `WAIT_FOR_SUBMIT` and
+  `WAIT_AVAILABLE`), `QUERY`, `TIMELINE_SIGNAL`, `TRANSFER`, `RESET`;
+- `EVENTFD`: an eventfd signalled when a point is reached, which is how a
+  compositor waits without a thread per buffer (it is what
+  `linux-drm-syncobj` servers use);
+- through ioctls on one device, `/dev/syncobj`, with the DRM ioctl layouts
+  (`struct drm_syncobj_*`), so libdrm's `drmSyncobj*()` functions can be
+  pointed at it.
+
+and a kernel API for drivers to attach a GPU fence to a point:
+
+```c
+typedef struct gpu_fence gpu_fence;
+typedef struct {
+	bool	(*is_signaled)(gpu_fence* fence);
+	/* Call syncobj_fence_signaled(fence) once the fence signals; may be
+	   called from an interrupt handler. */
+	status_t (*enable_signaling)(gpu_fence* fence);
+	void	(*release)(gpu_fence* fence);
+} gpu_fence_ops;
+
+struct gpu_fence {
+	const gpu_fence_ops* ops;
+	int32	ref_count;
+	/* owned by the syncobj module: */
+	void*	_private[4];
+};
+
+status_t syncobj_add_point(int32 syncobjHandle, team_id team,
+	uint64 point, gpu_fence* fence);
+void syncobj_fence_signaled(gpu_fence* fence);
+```
+
+The LinuxKPI DRM drivers map their `dma_fence` onto it directly.
+
+**Quasar side:** a GPU fence is a 64-bit semaphore value in GPU memory,
+which the GPU writes when the work before it completes (what NVK's RM back
+end already uses for every `VkSemaphore`). In the kernel, Quasar registers
+such a fence with the semaphore's memory and value, checks it whenever
+RM's non-stall interrupt reports a semaphore release, and calls
+`syncobj_fence_signaled()`. In Mesa, NVK exports and imports `VkSemaphore`
+and `VkFence` as syncobj fds and sync files
+(`VK_KHR_external_semaphore_fd`, `VK_KHR_external_fence_fd`), which Mesa's
+Wayland WSI and Chromium use. For a flip, the display engine can still wait
+on the semaphore memory itself (R-1 amendment); the syncobj is for
+everyone else.
+
+The open question to Renga: is this the shape you want for the compositor
+and `GpuSurface`, before Quasar starts on its half?
 
 ## Upstream header bug: `user_fd_kernel_ioctl()`
 
