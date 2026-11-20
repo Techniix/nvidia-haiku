@@ -65,9 +65,14 @@ done
 # The Vulkan loader: NVK is an ICD, and applications (and the tests) load
 # it through libvulkan. Renga images from 2026.11.13-devel-vulkan don't
 # include the loader yet.
-if ! ls /boot/system/lib/libvulkan.so* /boot/home/config/non-packaged/lib/libvulkan.so* >/dev/null 2>&1; then
-	missing+=("lib:libvulkan")
-fi
+# Checked per file: ls with several patterns fails when any one of them
+# matches nothing, even if another does.
+vulkanFound=0
+for f in /boot/system/lib/libvulkan.so* /boot/system/develop/lib/libvulkan.so* \
+		/boot/home/config/non-packaged/lib/libvulkan.so*; do
+	[ -e "$f" ] && vulkanFound=1
+done
+[ $vulkanFound = 1 ] || missing+=("vulkan_loader")
 
 # Quasar builds against Renga's own headers: the GPU presentation and
 # cursor interfaces with the R-1 semaphore fields (Renga f6b8442e), eventfd in
