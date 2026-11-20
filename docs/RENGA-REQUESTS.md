@@ -8,6 +8,50 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-20, `MultiHead.h` version 2
+
+- Version 2 landed in Renga `a55e2329`, with all six R-19 points.
+  app_server uses it for one desktop across two or more connected
+  outputs:
+  - it calls `set_configuration()` with `TEST_ONLY` first, then for real;
+  - it reads `get_output_mode()` and `get_frame_buffer_config()` per
+    output and copies damage into each output's buffer;
+  - mirrors get no copy, so the driver scans out the source's buffer;
+  - it draws the cursor itself for now, and does not read `event_fd()`
+    yet;
+  - it falls back to one screen through the classic hooks when
+    `set_configuration()` fails.
+
+### Quasar's answer
+
+Implemented (Quasar, after `fbe4672`):
+
+- **`set_configuration()`** is one NVKMS SET_MODE over every hardware
+  head, so NVKMS validates the whole configuration and applies all of it
+  or none. `B_MULTI_HEAD_TEST_ONLY` sends the same request uncommitted
+  and without surfaces. Unlisted outputs are turned off.
+- **Heads:** enabled outputs keep their heads, output 0 takes the
+  classic head, and the others take the lowest free head their dpy can
+  use. More enabled outputs than heads, or no usable head, gives
+  `B_BUSY`.
+- **Mirrors** scan out their source's surface on their own head, and
+  `get_frame_buffer_config()` for a mirror returns the source's buffer.
+  Output 0 cannot be a mirror (`B_NOT_SUPPORTED`): the classic hooks
+  would have no buffer of their own. Make output 0 the source instead.
+- **Output 0** takes part like the others: its new mode and frame buffer
+  go to the classic code, so the classic hooks and the table agree, and
+  the hardware cursor is put back after the modeset. A later classic
+  `B_SET_DISPLAY_MODE` puts output 0 back on the classic head.
+- **Also:** `count_hardware_heads()`; `move_output_cursor()` with int32
+  output-local coordinates; `max_bpc` from NVKMS (RGB 4:4:4);
+  `gamma_size` 0 until a gamma interface exists (R-11).
+  `B_OUTPUT_CONFIG_ALLOW_VRR` is accepted, but VRR is not enabled at
+  mode set yet (R-7).
+- The table is built only against version 2 or later. Image
+  `2026.11.20-batch4` (version 1) builds Quasar without it.
+
+Not run on the RTX 5070 yet.
+
 ## Renga's notes of 2026-11-20, R-19 accepted
 
 - **R-19 accepted, all six points.** `MultiHead.h` becomes version 2:
@@ -353,7 +397,7 @@ Renga will name the header path and kernel API when the module lands.
 | R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Landed: `0b53eaf9`, image `2026.11.13-devel-vulkan` | done |
 | R-1 amendment | Flips wait on a GPU semaphore, not a file | Landed: `f6b8442e` (plain-memory comment `2ca4e1f9`); implemented in the accelerant | done |
 | R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Landed: module `1424ffb4`, compositor `11591601`, first image `2026.11.20-batch4`; Quasar forwards the ioctls, GPU fences in progress | GPU stage |
-| R-19 | Changes to `MultiHead.h` before app_server uses it | Accepted 2026-11-20, all six points; `MultiHead.h` version 2 to come | before multi-screen app_server |
+| R-19 | Changes to `MultiHead.h` before app_server uses it | Landed: `MultiHead.h` version 2 (`a55e2329`); Quasar implements it | before multi-screen app_server |
 
 ## R-1 Accelerant extension
 

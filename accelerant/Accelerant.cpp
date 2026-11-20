@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <Accelerant.h>
 #include <driver_settings.h>
 
@@ -140,6 +141,7 @@ public:
 
 #if QUASAR_HAVE_MULTI_HEAD
 	NvMultiHead *MultiHead();
+	void AdoptClassicMode(const NvKmsMode *mode, NvKmsBitmap &&frameBuffer);
 #endif
 };
 
@@ -509,7 +511,39 @@ void NvAccelerant::SetDisplayMode(display_mode* modeToSet)
 
 	fOldFramebuffer = std::move(fFramebuffer);
 	fFramebuffer = std::move(newFramebuffer);
+#if QUASAR_HAVE_MULTI_HEAD
+	if (fMultiHead)
+		fMultiHead->ClassicModeSet();
+#endif
 }
+
+#if QUASAR_HAVE_MULTI_HEAD
+/*!	set_configuration() (MultiHead.h version 2) set output 0 together with
+	the other outputs in one NVKMS request: take over its mode and frame
+	buffer, so the classic hooks report what is on screen, and put the
+	cursor back (a modeset clears it). mode nullptr: output 0 is off.
+*/
+void NvAccelerant::AdoptClassicMode(const NvKmsMode *mode, NvKmsBitmap &&frameBuffer)
+{
+	fOldFramebuffer = std::move(fFramebuffer);
+	if (mode == nullptr) {
+		fCurrentMode = {};
+		fFramebuffer = NvKmsBitmap();
+		return;
+	}
+	fCurrentMode = *mode;
+	fFramebuffer = std::move(frameBuffer);
+	if (ShownCursorSurface() != 0) {
+		try {
+			ApplyCursorImage(ShownCursorSurface());
+			ApplyCursorPosition();
+		} catch (const std::system_error &ex) {
+			debug_printf("[!] nvidia_gsp: restoring the cursor after set_configuration: %s\n", ex.what());
+			MarkCursorImageStale();
+		}
+	}
+}
+#endif
 
 void NvAccelerant::GetDisplayMode(display_mode* currentMode)
 {
@@ -914,6 +948,13 @@ NvMultiHead *NvAccelerant::MultiHead()
 			.disp = fDisp,
 			.classicDpy = fDpyId,
 			.classicHwHead = fHead,
+			.adoptClassic = [](const NvKmsMode *mode, NvKmsBitmap &&frameBuffer) {
+				NvAccelerant::Instance()->AdoptClassicMode(mode, std::move(frameBuffer));
+			},
+			.classicFrameBuffer = []() -> const NvKmsBitmap * {
+				NvAccelerant *accelerant = NvAccelerant::Instance();
+				return accelerant->fFramebuffer.IsSet() ? &accelerant->fFramebuffer : nullptr;
+			},
 		});
 		CursorImageChanged();
 		// Hot-plug events arrive on the presenter's NVKMS event thread.
@@ -1036,7 +1077,7 @@ static status_t ClassicCall(F f)
 	return B_OK;
 }
 
-static uint32 mh_count_heads()
+static uint32 mh_count_outputs()
 {
 	try {
 		return Multi()->Count();
@@ -1045,7 +1086,7 @@ static uint32 mh_count_heads()
 	}
 }
 
-static status_t mh_get_head_info(uint32 head, multi_head_info *info)
+static status_t mh_get_output_info(uint32 head, multi_head_info *info)
 {
 	MULTI_CALL(Multi()->GetInfo(head, info));
 }
@@ -1068,7 +1109,7 @@ static status_t mh_get_mode_list(uint32 head, display_mode *modes)
 	MULTI_CALL(Multi()->GetModeList(head, modes));
 }
 
-static status_t mh_set_head_mode(uint32 head, const display_mode *mode)
+static status_t mh_set_output_mode(uint32 head, const display_mode *mode)
 {
 	if (head == 0) {
 		// The classic display has no "off": app_server uses DPMS for it.
@@ -1080,7 +1121,7 @@ static status_t mh_set_head_mode(uint32 head, const display_mode *mode)
 	MULTI_CALL(Multi()->SetMode(head, mode));
 }
 
-static status_t mh_get_head_mode(uint32 head, display_mode *mode)
+static status_t mh_get_output_mode(uint32 head, display_mode *mode)
 {
 	if (head == 0)
 		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->GetDisplayMode(mode);}));
@@ -1094,23 +1135,27 @@ static status_t mh_get_frame_buffer_config(uint32 head, frame_buffer_config *con
 	MULTI_CALL(Multi()->GetFrameBufferConfig(head, config));
 }
 
-static status_t mh_set_head_dpms(uint32 head, uint32 dpmsFlags)
+static status_t mh_set_output_dpms(uint32 head, uint32 dpmsFlags)
 {
 	if (head == 0)
 		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->SetDpmsMode(dpmsFlags);}));
 	MULTI_CALL(Multi()->SetDpms(head, dpmsFlags));
 }
 
-static status_t mh_move_head_cursor(uint32 head, uint16 x, uint16 y)
+static status_t mh_move_output_cursor(uint32 head, int32 x, int32 y)
 {
 	if (!HardwareCursorEnabled())
 		return B_NOT_SUPPORTED;
-	if (head == 0)
-		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->MoveCursor(x, y);}));
+	// The classic hook takes uint16; outside output 0 the cursor is off it.
+	if (head == 0) {
+		uint16 cx = (uint16)std::clamp<int32>(x, 0, UINT16_MAX);
+		uint16 cy = (uint16)std::clamp<int32>(y, 0, UINT16_MAX);
+		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->MoveCursor(cx, cy);}));
+	}
 	MULTI_CALL(Multi()->MoveCursor(head, x, y));
 }
 
-static status_t mh_show_head_cursor(uint32 head, bool visible)
+static status_t mh_show_output_cursor(uint32 head, bool visible)
 {
 	if (!HardwareCursorEnabled())
 		return B_NOT_SUPPORTED;
@@ -1119,7 +1164,7 @@ static status_t mh_show_head_cursor(uint32 head, bool visible)
 	MULTI_CALL(Multi()->ShowCursor(head, visible));
 }
 
-static status_t mh_get_head_edid(uint32 head, void *data, size_t *size)
+static status_t mh_get_output_edid(uint32 head, void *data, size_t *size)
 {
 	MULTI_CALL(Multi()->GetEdid(head, data, size));
 }
@@ -1133,22 +1178,39 @@ static int mh_event_fd()
 	}
 }
 
+static uint32 mh_count_hardware_heads()
+{
+	try {
+		return Multi()->HardwareHeadCount();
+	} catch (...) {
+		return 1;
+	}
+}
+
+static status_t mh_set_configuration(const multi_head_config *configs, uint32 count,
+	uint32 flags)
+{
+	MULTI_CALL(Multi()->SetConfiguration(configs, count, flags));
+}
+
 static const multi_head_hooks *MultiHeadHooks()
 {
 	static const multi_head_hooks sHooks = {
-		.version = B_MULTI_HEAD_VERSION,
-		.count_heads = mh_count_heads,
-		.get_head_info = mh_get_head_info,
+		.version = 2,
+		.count_outputs = mh_count_outputs,
+		.get_output_info = mh_get_output_info,
 		.mode_count = mh_mode_count,
 		.get_mode_list = mh_get_mode_list,
-		.set_head_mode = mh_set_head_mode,
-		.get_head_mode = mh_get_head_mode,
+		.set_output_mode = mh_set_output_mode,
+		.get_output_mode = mh_get_output_mode,
 		.get_frame_buffer_config = mh_get_frame_buffer_config,
-		.set_head_dpms = mh_set_head_dpms,
-		.move_head_cursor = mh_move_head_cursor,
-		.show_head_cursor = mh_show_head_cursor,
-		.get_head_edid = mh_get_head_edid,
+		.set_output_dpms = mh_set_output_dpms,
+		.move_output_cursor = mh_move_output_cursor,
+		.show_output_cursor = mh_show_output_cursor,
+		.get_output_edid = mh_get_output_edid,
 		.event_fd = mh_event_fd,
+		.count_hardware_heads = mh_count_hardware_heads,
+		.set_configuration = mh_set_configuration,
 	};
 	return &sHooks;
 }

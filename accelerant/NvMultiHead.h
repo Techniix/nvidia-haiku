@@ -2,11 +2,10 @@
 
 /*
  * Several displays on one GPU: the accelerant half of Renga's
- * <add-ons/graphics/MultiHead.h> (provisional version 1, QUASAR.md
- * 2026-11-20), on NVKMS.
+ * <add-ons/graphics/MultiHead.h> (version 2, Renga a55e2329, which is
+ * R-19 as accepted), on NVKMS.
  *
- * Numbering. The table's "head" numbers are display outputs (NVKMS dpys),
- * as Quasar asks Renga to state in R-19:
+ * Numbering. The table's numbers are display outputs (NVKMS dpys):
  *  - output 0 is the display the classic hooks drive (the accelerant's
  *    first connected dpy, on hardware head 0). Everything about output 0
  *    except its description is answered by the classic code in
@@ -14,14 +13,22 @@
  *  - outputs 1.. are the GPU's other dpys, in NVKMS's order. A connector
  *    keeps its number while the accelerant is loaded.
  * Hardware heads are chosen when an output is enabled: the lowest head the
- * dpy can use (NVKMS's headMask) that no other enabled output holds. Head 0
- * stays with output 0. <GpuPresent.h>'s head arguments are output numbers;
- * NvPresent maps them through HwHeadOf()/OutputOf().
+ * dpy can use (NVKMS's headMask) that no other enabled output holds. The
+ * classic head (0) is reserved for output 0, so the classic hooks can always
+ * turn output 0 back on. <GpuPresent.h>'s head arguments are output
+ * numbers; NvPresent maps them through HwHeadOf()/OutputOf().
  *
- * Not yet handled: DisplayPort MST displays that appear behind a connector
- * (NVKMS's dynamic dpys) get no number; configurations are applied one
- * output at a time (R-19 asks for set_configuration()); VRR is not enabled
- * at mode-set time.
+ * set_configuration() (version 2) is one NVKMS SET_MODE over every hardware
+ * head: NVKMS validates the whole configuration (shared display bandwidth,
+ * IMP) and applies it or nothing. TEST_ONLY is the same request with commit
+ * false and no surfaces. Output 0 takes part like any other output; its new
+ * frame buffer and mode are handed to the classic code (Context::adopt-
+ * Classic) so the classic hooks stay in step. Mirrors scan out their
+ * source's surface on their own head.
+ *
+ * Not yet handled: DisplayPort MST displays behind a connector (NVKMS's
+ * dynamic dpys) get no number, and B_OUTPUT_CONFIG_ALLOW_VRR is accepted
+ * but VRR is not yet enabled at mode-set time (R-7).
  *
  * Threads: every hook runs in app_server's thread that called it. HwHeadOf()
  * and OutputOf() are also called from NvPresent's event thread and read only
@@ -40,8 +47,18 @@ static const uint32_t kNvNoHead = ~(uint32_t)0;
 // the table is built only when the header is there (docs/RENGA-STATUS.md,
 // transitional code). Without it the accelerant offers no B_MULTI_HEAD_HOOKS,
 // exactly as an accelerant that does not implement the table.
+//
+// Quasar implements version 2 (set_configuration()). Image 2026.11.20-batch4
+// carries version 1, which Quasar no longer builds against: the table is
+// compiled only with version 2 or later.
 #if __has_include(<add-ons/graphics/MultiHead.h>)
-#	define QUASAR_HAVE_MULTI_HEAD 1
+#	include <Accelerant.h>
+#	include <add-ons/graphics/MultiHead.h>
+#	if B_MULTI_HEAD_VERSION >= 2
+#		define QUASAR_HAVE_MULTI_HEAD 1
+#	else
+#		define QUASAR_HAVE_MULTI_HEAD 0
+#	endif
 #else
 #	define QUASAR_HAVE_MULTI_HEAD 0
 #endif
@@ -72,6 +89,13 @@ public:
 		NvKmsDispHandle disp;
 		NVDpyId classicDpy;		// output 0
 		NvU32 classicHwHead;	// its hardware head (0)
+		// set_configuration() changed output 0: mode nullptr turned it off,
+		// otherwise the classic code adopts mode and frame buffer (and puts
+		// its cursor back, which a modeset clears).
+		void (*adoptClassic)(const NvKmsMode *mode, NvKmsBitmap &&frameBuffer);
+		// The classic code's current frame buffer, for mirrors of output 0
+		// and for set_configuration() keeping output 0's buffer.
+		const NvKmsBitmap *(*classicFrameBuffer)();
 	};
 
 	static const uint32 kNoHead = kNvNoHead;
@@ -83,6 +107,13 @@ public:
 	NvMultiHead &operator=(const NvMultiHead &) = delete;
 
 	uint32 Count() const {return (uint32)fOutputs.size();}
+	uint32 HardwareHeadCount() const;
+	// The classic hooks set a mode: output 0 is on the classic head again.
+	void ClassicModeSet();
+
+	// Version 2: all outputs at once, all or nothing.
+	status_t SetConfiguration(const multi_head_config *configs, uint32 count,
+		uint32 flags);
 
 	// Every output, 0 included.
 	status_t GetInfo(uint32 output, multi_head_info *info);
@@ -95,7 +126,7 @@ public:
 	status_t GetMode(uint32 output, display_mode *mode);
 	status_t GetFrameBufferConfig(uint32 output, frame_buffer_config *config);
 	status_t SetDpms(uint32 output, uint32 dpmsFlags);
-	status_t MoveCursor(uint32 output, uint16 x, uint16 y);
+	status_t MoveCursor(uint32 output, int32 x, int32 y);
 	status_t ShowCursor(uint32 output, bool visible);
 
 	// The classic hooks changed the cursor image or hot spot: show the new
@@ -124,6 +155,7 @@ private:
 		std::atomic<bool> modesValid {false};	// cleared by Hotplug()
 		NvKmsMode mode {};			// hVisible 0: off
 		NvKmsBitmap frameBuffer, oldFrameBuffer;
+		uint32 mirrorOf = B_NO_SOURCE_OUTPUT;	// scans out that output's buffer
 		bool dpmsOff = false;
 		bool cursorVisible = false;
 		int32 cursorX = 0, cursorY = 0;
@@ -133,6 +165,7 @@ private:
 	void LoadModes(Output &out);
 	bool ValidateMode(const Output &out, const NvKmsMode &mode);
 	uint32 PickHwHead(const Output &out) const;
+	const NvKmsBitmap *FrameBufferOf(uint32 output) const;
 	void SubmitMode(Output &out, uint32 hwHead, const NvKmsMode *mode,
 		const NvKmsBitmap *frameBuffer);
 	void ApplyCursor(Output &out);

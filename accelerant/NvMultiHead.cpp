@@ -170,6 +170,9 @@ NvMultiHead::GetInfo(uint32 output, multi_head_info *info)
 		info->flags |= B_HEAD_VRR;
 	if (dynamic.supportsHDR)
 		info->flags |= B_HEAD_HDR;
+	// RGB 4:4:4 is what the desktop scans out. gamma_size stays 0: Quasar
+	// offers no gamma interface yet (R-11).
+	info->max_bpc = dynamic.supportedOutputColorFormats.rgb444.maxBpc;
 	info->width_mm = dynamic.physicalDimensions.widthInCM * 10;
 	info->height_mm = dynamic.physicalDimensions.heightInCM * 10;
 
@@ -207,7 +210,7 @@ NvMultiHead::GetInfo(uint32 output, multi_head_info *info)
 				maxRefresh = params.reply.mode.timings.RRx1k;
 		}
 		// RRx1k is millihertz, as the header's fields.
-		info->max_refresh_mhz = maxRefresh;
+		info->max_refresh_millihz = maxRefresh;
 		if (info->flags & B_HEAD_VRR) {
 			NvKmsGetDpyAttributeParams params {};
 			params.request.deviceHandle = fContext.kmsDev->Get();
@@ -216,7 +219,7 @@ NvMultiHead::GetInfo(uint32 output, multi_head_info *info)
 			params.request.attribute = NV_KMS_DPY_ATTRIBUTE_VRR_MIN_REFRESH_RATE;
 			if (fContext.kms->Control(NVKMS_IOCTL_GET_DPY_ATTRIBUTE, &params,
 					sizeof(params)) >= 0 && params.reply.value > 0)
-				info->min_refresh_mhz = (uint32)params.reply.value * 1000;
+				info->min_refresh_millihz = (uint32)params.reply.value * 1000;
 		}
 	}
 	return B_OK;
@@ -312,12 +315,47 @@ NvMultiHead::PickHwHead(const Output &out) const
 		if (head != kNoHead)
 			used |= 1U << head;
 	}
+	// The classic head belongs to output 0 even while it is off.
+	if (&out != fOutputs[0].get())
+		used |= 1U << fContext.classicHwHead;
 	uint32 numHeads = fContext.kmsDev->Info().numHeads;
 	for (uint32 head = 0; head < numHeads; head++) {
 		if ((out.headMask & (1U << head)) != 0 && (used & (1U << head)) == 0)
 			return head;
 	}
 	return kNoHead;
+}
+
+
+// The classic hooks set a mode on output 0 (always on the classic head).
+void
+NvMultiHead::ClassicModeSet()
+{
+	fOutputs[0]->hwHead = fContext.classicHwHead;
+	fOutputs[0]->mirrorOf = B_NO_SOURCE_OUTPUT;
+}
+
+
+uint32
+NvMultiHead::HardwareHeadCount() const
+{
+	return fContext.kmsDev->Info().numHeads;
+}
+
+
+// The frame buffer an output scans out: its own, output 0's from the
+// classic code, or for a mirror its source's.
+const NvKmsBitmap *
+NvMultiHead::FrameBufferOf(uint32 output) const
+{
+	if (output >= fOutputs.size())
+		return nullptr;
+	const Output &out = *fOutputs[output];
+	if (out.mirrorOf != B_NO_SOURCE_OUTPUT)
+		return FrameBufferOf(out.mirrorOf);
+	if (output == 0)
+		return fContext.classicFrameBuffer();
+	return out.frameBuffer.IsSet() ? &out.frameBuffer : nullptr;
 }
 
 
@@ -384,6 +422,7 @@ NvMultiHead::SetMode(uint32 output, const display_mode *mode)
 			return B_OK;
 		SubmitMode(out, hwHead, nullptr, nullptr);
 		out.hwHead = kNoHead;
+		out.mirrorOf = B_NO_SOURCE_OUTPUT;
 		out.mode = {};
 		out.oldFrameBuffer = NvKmsBitmap();
 		out.frameBuffer = NvKmsBitmap();
@@ -411,12 +450,219 @@ NvMultiHead::SetMode(uint32 output, const display_mode *mode)
 	SubmitMode(out, hwHead, &nvMode, &frameBuffer);
 
 	out.hwHead = hwHead;
+	out.mirrorOf = B_NO_SOURCE_OUTPUT;
 	out.mode = nvMode;
 	out.dpmsOff = false;
 	// The old frame buffer may still be read until the new mode's first
 	// frame; keep it until the next change, as the classic code does.
 	out.oldFrameBuffer = std::move(out.frameBuffer);
 	out.frameBuffer = std::move(frameBuffer);
+	return B_OK;
+}
+
+
+/*!	Version 2: every output at once (R-19). One NVKMS SET_MODE over all
+	hardware heads, so NVKMS checks the configuration as a whole and applies
+	all of it or none. Outputs not listed are turned off.
+
+	Plan: each enabled output keeps its hardware head if it has one and the
+	dpy can still use it, output 0 gets the classic head, the others the
+	lowest free head in their headMask. More enabled outputs than heads, or
+	an output that finds no head, gives B_BUSY. A mirror's mode is its
+	source's, and it scans out the source's surface.
+
+	TEST_ONLY sends the same request with commit false and without
+	surfaces (NVKMS checks modes, heads and bandwidth; nothing is allocated).
+*/
+status_t
+NvMultiHead::SetConfiguration(const multi_head_config *configs, uint32 count,
+	uint32 flags)
+{
+	const uint32 outputs = Count();
+	const uint32 numHeads = HardwareHeadCount();
+	const bool testOnly = (flags & B_MULTI_HEAD_TEST_ONLY) != 0;
+	if (configs == nullptr && count != 0)
+		return B_BAD_VALUE;
+
+	struct Plan {
+		bool enabled = false;
+		uint32 source = B_NO_SOURCE_OUTPUT;
+		display_mode mode {};
+		NvKmsMode nvMode {};
+		uint32 hwHead = kNoHead;
+	};
+	std::vector<Plan> plan(outputs);
+
+	uint32 enabled = 0;
+	for (uint32 i = 0; i < count; i++) {
+		const multi_head_config &config = configs[i];
+		if (config.output >= outputs || plan[config.output].enabled)
+			return B_BAD_VALUE;		// unknown, or listed twice enabled
+		if ((config.flags & B_OUTPUT_CONFIG_ENABLED) == 0)
+			continue;
+		Plan &p = plan[config.output];
+		p.enabled = true;
+		p.source = config.source_output == config.output
+			? B_NO_SOURCE_OUTPUT : config.source_output;
+		p.mode = config.mode;
+		enabled++;
+	}
+	if (enabled > numHeads)
+		return B_BUSY;
+
+	// Mirrors: the source must be enabled and not a mirror itself. Output 0
+	// cannot be a mirror: the classic hooks would have no frame buffer of
+	// their own to report (app_server can make output 0 the source instead).
+	if (plan[0].enabled && plan[0].source != B_NO_SOURCE_OUTPUT)
+		return B_NOT_SUPPORTED;
+	for (uint32 i = 0; i < outputs; i++) {
+		Plan &p = plan[i];
+		if (!p.enabled || p.source == B_NO_SOURCE_OUTPUT)
+			continue;
+		if (p.source >= outputs || !plan[p.source].enabled
+			|| plan[p.source].source != B_NO_SOURCE_OUTPUT)
+			return B_BAD_VALUE;
+		p.mode = plan[p.source].mode;
+	}
+
+	for (uint32 i = 0; i < outputs; i++) {
+		Plan &p = plan[i];
+		if (!p.enabled)
+			continue;
+		const display_mode &mode = p.mode;
+		if (mode.virtual_width != mode.timing.h_display
+			|| mode.virtual_height != mode.timing.v_display
+			|| mode.h_display_start != 0 || mode.v_display_start != 0)
+			return B_BAD_VALUE;
+		p.nvMode = ToNvKmsMode(mode);
+		if (!ValidateMode(*fOutputs[i], p.nvMode))
+			return B_BAD_VALUE;
+	}
+
+	// Hardware heads: keep, then classic, then the lowest free.
+	uint32 used = 0;
+	for (uint32 i = 0; i < outputs; i++) {
+		uint32 head = fOutputs[i]->hwHead.load();
+		if (plan[i].enabled && head != kNoHead
+			&& (i == 0 || head != fContext.classicHwHead)) {
+			plan[i].hwHead = head;
+			used |= 1U << head;
+		}
+	}
+	if (plan[0].enabled && plan[0].hwHead == kNoHead
+		&& (used & (1U << fContext.classicHwHead)) == 0) {
+		plan[0].hwHead = fContext.classicHwHead;
+		used |= 1U << fContext.classicHwHead;
+	}
+	for (uint32 i = 0; i < outputs; i++) {
+		Plan &p = plan[i];
+		if (!p.enabled || p.hwHead != kNoHead)
+			continue;
+		uint32 reserved = i == 0 ? 0 : 1U << fContext.classicHwHead;
+		for (uint32 head = 0; head < numHeads; head++) {
+			uint32 bit = 1U << head;
+			if ((fOutputs[i]->headMask & bit) != 0 && ((used | reserved) & bit) == 0) {
+				p.hwHead = head;
+				used |= bit;
+				break;
+			}
+		}
+		if (p.hwHead == kNoHead)
+			return B_BUSY;
+	}
+
+	// Frame buffers for the outputs that have their own (not for a test).
+	std::vector<NvKmsBitmap> frameBuffers(outputs);
+	if (!testOnly) {
+		for (uint32 i = 0; i < outputs; i++) {
+			const Plan &p = plan[i];
+			if (p.enabled && p.source == B_NO_SOURCE_OUTPUT) {
+				frameBuffers[i] = NvKmsBitmap(*fContext.rmDev, *fContext.kmsDev,
+					p.mode.virtual_width, p.mode.virtual_height,
+					(color_space)p.mode.space);
+			}
+		}
+	}
+
+	auto params = std::make_unique<NvKmsSetModeParams>();
+	params->request.deviceHandle = fContext.kmsDev->Get();
+	params->request.commit = !testOnly;
+	params->request.requestedDispsBitMask = 1U << 0;
+	params->request.disp[0].requestedHeadsBitMask = (1U << numHeads) - 1;
+	for (uint32 head = 0; head < numHeads; head++)
+		params->request.disp[0].head[head].dpyIdList = nvEmptyDpyIdList();
+	for (uint32 i = 0; i < outputs; i++) {
+		const Plan &p = plan[i];
+		if (!p.enabled)
+			continue;
+		auto &head = params->request.disp[0].head[p.hwHead];
+		const NvKmsMode &mode = p.nvMode;
+		head.dpyIdList = nvAddDpyIdToEmptyDpyIdList(fOutputs[i]->dpy);
+		head.mode = mode;
+		head.modeValidationParams.overrides = NVKMS_MODE_VALIDATION_NO_RRX1K_CHECK;
+		head.viewPortOut = {.x = 0, .y = 0, .width = (NvU16)mode.timings.hVisible,
+			.height = (NvU16)mode.timings.vVisible};
+		head.viewPortSizeIn = {.width = (NvU16)mode.timings.hVisible,
+			.height = (NvU16)mode.timings.vVisible};
+		if (testOnly)
+			continue;
+		const NvKmsBitmap &surface = frameBuffers[
+			p.source == B_NO_SOURCE_OUTPUT ? i : p.source];
+		auto &layer = head.flip.layer[NVKMS_MAIN_LAYER];
+		layer.surface.handle[0] = surface.Surface().Get();
+		layer.surface.specified = true;
+		layer.sizeIn.val = {.width = (NvU16)surface.Width(),
+			.height = (NvU16)surface.Height()};
+		layer.sizeIn.specified = true;
+		layer.sizeOut.val = layer.sizeIn.val;
+		layer.sizeOut.specified = true;
+		// A modeset clears the cursor; outputs 1.. carry theirs over here,
+		// output 0's is put back by the classic code (adoptClassic).
+		const Output &out = *fOutputs[i];
+		if (i != 0 && out.cursorVisible && fCursorSurface != 0) {
+			head.flip.cursor.image.surfaceHandle[NVKMS_LEFT] = fCursorSurface;
+			head.flip.cursor.image.cursorCompParams = CursorCompParams();
+			head.flip.cursor.imageSpecified = true;
+			head.flip.cursor.position = {
+				.x = (NvS16)(out.cursorX - fCursorHotX),
+				.y = (NvS16)(out.cursorY - fCursorHotY)};
+			head.flip.cursor.positionSpecified = true;
+		}
+	}
+
+	if (fContext.kms->Control(NVKMS_IOCTL_SET_MODE, params.get(), sizeof(*params)) < 0) {
+		debug_printf("[!] NvMultiHead: set_configuration%s rejected: status %d,"
+			" disp %d\n", testOnly ? " (test)" : "", params->reply.status,
+			params->reply.disp[0].status);
+		for (uint32 head = 0; head < numHeads; head++) {
+			if (params->reply.disp[0].head[head].status != NVKMS_SET_MODE_ONE_HEAD_STATUS_SUCCESS)
+				debug_printf("[!]   head %" B_PRIu32 ": status %d\n", head,
+					params->reply.disp[0].head[head].status);
+		}
+		return B_BAD_VALUE;
+	}
+	if (testOnly)
+		return B_OK;
+
+	// Committed: record the new state.
+	for (uint32 i = 1; i < outputs; i++) {
+		Output &out = *fOutputs[i];
+		const Plan &p = plan[i];
+		out.hwHead = p.enabled ? p.hwHead : kNoHead;
+		out.mirrorOf = p.enabled ? p.source : B_NO_SOURCE_OUTPUT;
+		out.mode = p.enabled ? p.nvMode : NvKmsMode {};
+		if (p.enabled)
+			out.dpmsOff = false;
+		// The previous buffer may be read until the first frame of the new
+		// configuration: keep it until the next change.
+		out.oldFrameBuffer = std::move(out.frameBuffer);
+		out.frameBuffer = std::move(frameBuffers[i]);
+	}
+	Output &zero = *fOutputs[0];
+	zero.hwHead = plan[0].enabled ? plan[0].hwHead : kNoHead;
+	zero.mirrorOf = plan[0].enabled ? plan[0].source : B_NO_SOURCE_OUTPUT;
+	fContext.adoptClassic(plan[0].enabled ? &plan[0].nvMode : nullptr,
+		std::move(frameBuffers[0]));
 	return B_OK;
 }
 
@@ -428,7 +674,8 @@ NvMultiHead::GetMode(uint32 output, display_mode *mode)
 	if (out.hwHead.load() == kNoHead)
 		return B_ENTRY_NOT_FOUND;
 	*mode = ToHaikuMode(out.mode);
-	mode->space = out.frameBuffer.ColorSpace();
+	if (const NvKmsBitmap *frameBuffer = FrameBufferOf(output))
+		mode->space = frameBuffer->ColorSpace();
 	return B_OK;
 }
 
@@ -436,12 +683,13 @@ NvMultiHead::GetMode(uint32 output, display_mode *mode)
 status_t
 NvMultiHead::GetFrameBufferConfig(uint32 output, frame_buffer_config *config)
 {
-	Output &out = *Extra(output);
-	if (!out.frameBuffer.IsSet())
+	Extra(output);
+	const NvKmsBitmap *frameBuffer = FrameBufferOf(output);
+	if (frameBuffer == nullptr)
 		return B_ENTRY_NOT_FOUND;
-	config->frame_buffer = out.frameBuffer.Bits();
+	config->frame_buffer = frameBuffer->Bits();
 	config->frame_buffer_dma = nullptr;
-	config->bytes_per_row = out.frameBuffer.BytesPerRow();
+	config->bytes_per_row = frameBuffer->BytesPerRow();
 	return B_OK;
 }
 
@@ -508,7 +756,7 @@ NvMultiHead::ApplyCursor(Output &out)
 
 
 status_t
-NvMultiHead::MoveCursor(uint32 output, uint16 x, uint16 y)
+NvMultiHead::MoveCursor(uint32 output, int32 x, int32 y)
 {
 	Output &out = *Extra(output);
 	out.cursorX = x;
@@ -566,17 +814,17 @@ NvMultiHead::ScanoutMemory(uint32 output, gpu_buffer_desc *desc)
 {
 	if (output == 0 || output >= Count())
 		return 0;
-	Output &out = *fOutputs[output];
-	if (!out.frameBuffer.IsSet())
+	const NvKmsBitmap *frameBuffer = FrameBufferOf(output);
+	if (frameBuffer == nullptr)
 		return 0;
 	*desc = {};
-	desc->width = out.frameBuffer.Width();
-	desc->height = out.frameBuffer.Height();
-	desc->bytes_per_row = out.frameBuffer.BytesPerRow();
-	desc->format = out.frameBuffer.ColorSpace();
+	desc->width = frameBuffer->Width();
+	desc->height = frameBuffer->Height();
+	desc->bytes_per_row = frameBuffer->BytesPerRow();
+	desc->format = frameBuffer->ColorSpace();
 	desc->modifier = 0;	// linear
 	desc->offset = 0;
-	return out.frameBuffer.Memory().Get();
+	return frameBuffer->Memory().Get();
 }
 
 
