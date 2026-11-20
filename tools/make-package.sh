@@ -185,7 +185,9 @@ while IFS= read -r -d '' f; do
 	soname="$("$objdump" -p "$f" 2>/dev/null | awk '$1 == "SONAME" {print $2}')"
 	[ -n "$soname" ] && carried["$soname"]=1
 	while read -r lib; do
-		neededLibs["$lib"]=1
+		# Kernel add-ons are linked against _KERNEL_ by path, so their
+		# NEEDED entry is a path (/boot/system/develop/lib/_KERNEL_).
+		neededLibs["${lib##*/}"]=1
 	done < <("$objdump" -p "$f" 2>/dev/null | awk '$1 == "NEEDED" {print $2}')
 done < <(find "$stage" -path "$stage/data/firmware" -prune -o \( -type f -o -type l \) -print0)
 requires=("haiku")
