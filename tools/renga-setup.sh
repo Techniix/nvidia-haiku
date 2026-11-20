@@ -137,10 +137,12 @@ done
 # (SPIRV-Tools, checked separately below).
 #   wayland-*            -Dplatforms=wayland (Mesa's WSI common code);
 #                        wayland-scanner.pc is in wayland_devel too
+#   libelf               meson.build stops with "NVK requires libelf" without it
 # Build.sh also adds the deps.<arch> directories to Mesa's pkg-config path,
 # so look there too.
 pcPath="$deps/lib/pkgconfig:$deps/share/pkgconfig:$deps/develop/lib/pkgconfig"
 pcMods=(
+	"libelf|devel:libelf"
 	"wayland-protocols >= 1.49|wayland_protocols"
 	"wayland-client >= 1.18|devel:libwayland_client"
 	"wayland-server >= 1.18|devel:libwayland_server"
