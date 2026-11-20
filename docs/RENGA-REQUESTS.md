@@ -8,6 +8,74 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-20, batch 7
+
+- RengaPorts packages Mesa 26.2.2 (`9a1c3ae`): llvmpipe, lavapipe, glvnd,
+  EGL, no Zink. Renga asks whether to carry a rebased `mesa-zink/0001`,
+  and whether NVK's ICD loads next to this Mesa.
+- app_server now writes only changed pixels, compared against a copy of
+  what it last wrote. It asks whether Quasar writes the scanout buffer
+  outside the paths that reset that copy.
+- The EFI loader prefers the EDID or firmware mode at boot.
+
+### Quasar's answer
+
+- **Quasar's Mesa is 26.3 now, not 26.2.2.** Since 2026-11-20, NVK and
+  Zink both come from Techniix/mesa `renga-26.3` (Mesa 26.3.0). X547's
+  `mesa-zink` checkout and `tools/patches/mesa-zink` are gone. The
+  pbuffer patch is commit `3d57ac79` there and applies to 26.3, not to
+  upstream 26.2.2, so Renga does not need its own rebased copy: see
+  R-20.
+- **R-20 (proposed): one system Mesa with Zink.** Two packages each
+  shipping `libEGL_mesa.so.0`, `50_mesa.json` and libglvnd (Renga's
+  Mesa and Quasar) is fragile. Which vendor libglvnd picks then depends
+  on search order. Proposal:
+  - Renga's `mesa` recipe builds from Techniix/mesa `renga-26.3`, or from
+    upstream 26.3 plus the commits below, with
+    `-Dgallium-drivers=llvmpipe,zink -Dvulkan-drivers=swrast
+    -Dplatforms=haiku -Dglvnd=enabled`.
+  - Its EGL uses Zink whenever a GPU Vulkan driver is installed, and
+    llvmpipe otherwise (`a1514e46`). Zink refuses lavapipe by itself;
+    `GALLIUM_DRIVER=llvmpipe` and `LIBGL_ALWAYS_SOFTWARE` force software.
+  - Quasar then ships only the kernel driver, accelerant, NVK with its
+    manifest, the RengaWsi layer and firmware, and drops Zink, libglvnd
+    and `libEGL_mesa` from its package.
+  - Zink on Renga then works on any future Vulkan GPU driver, not only
+    NVIDIA's.
+
+  Haiku commits on `renga-26.3` on top of upstream 26.3:
+
+  | Commit | What |
+  |---|---|
+  | `3e586470` | Haiku support for Zink (kopper on a BitmapHook) |
+  | `3d57ac79` | pbuffers without a window |
+  | `32e1fb32` | libgnu for inotify |
+  | `423ba7c0` | libbe for the WSI |
+  | `c7aca8ab` | xmlconfig for Zink |
+  | `a1514e46` | Zink-or-llvmpipe selection |
+
+  The NVK and RM back-end commits are only needed by Quasar's NVK
+  build. Whether Renga adopts this, and when, is Renga's call. Until
+  then Quasar keeps shipping its own Zink.
+- **NVK next to Renga's Mesa:** the Vulkan loader lists each ICD on its
+  own, so NVK and lavapipe are both offered and programs pick the GPU.
+  Nothing in NVK links to Mesa's EGL. Not yet tested on Renga with
+  Renga's Mesa installed; Quasar's next fresh-image run will check it.
+- **Changed-pixel writes:** Quasar never writes app_server's frame
+  buffers.
+  - `<GpuPresent.h>` flips put other surfaces on planes. When the main
+    plane goes back to the frame buffer, it shows what app_server last
+    wrote there.
+  - `export_scanout` and screen copies only read.
+  - The hardware cursor is its own plane.
+
+  So no reset hook is needed. One point: `B_SET_DISPLAY_MODE` and every
+  committed `set_configuration()` give the outputs new frame buffers,
+  output 0 included. Please treat a successful `set_configuration()` like
+  a mode change and reset the copy.
+- **Boot mode:** no change needed. The accelerant sets its own mode
+  through NVKMS when it starts.
+
 ## Renga's notes of 2026-11-20, `MultiHead.h` version 2
 
 - Version 2 landed in Renga `a55e2329`, with all six R-19 points.
@@ -397,6 +465,7 @@ Renga will name the header path and kernel API when the module lands.
 | R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Landed: `0b53eaf9`, image `2026.11.13-devel-vulkan` | done |
 | R-1 amendment | Flips wait on a GPU semaphore, not a file | Landed: `f6b8442e` (plain-memory comment `2ca4e1f9`); implemented in the accelerant | done |
 | R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Landed: module `1424ffb4`, compositor `11591601`, first image `2026.11.20-batch4`; Quasar forwards the ioctls, GPU fences in progress | GPU stage |
+| R-20 | One system Mesa (26.3) with Zink and llvmpipe; Quasar stops shipping Zink and libglvnd | Proposed 2026-11-20 | Renga's next Mesa package |
 | R-19 | Changes to `MultiHead.h` before app_server uses it | Landed: `MultiHead.h` version 2 (`a55e2329`); Quasar implements it | before multi-screen app_server |
 
 ## R-1 Accelerant extension
