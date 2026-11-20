@@ -67,7 +67,7 @@ Both are fixed, not timed out:
 
 To check on a machine whether a hang is in this area, run the app with `MESA_VK_ENABLE_SUBMIT_THREAD=0`, which keeps queues in immediate mode. If the hang goes away, it is a submit-thread-mode bug. `=1` starts every queue in that mode.
 
-### Zink and the Haiku EGL driver (`tools/patches/mesa-zink/`)
+### Zink and the Haiku EGL driver (commits on Techniix/mesa `renga-26.3`; formerly `tools/patches/mesa-zink/`)
 
 **`0001`: pbuffers without a window.** A pbuffer's framebuffer has no `BitmapHook`, but `haiku_make_current()` called `update_size()`, which called `GetSize()` through that NULL pointer; OBS avoided pbuffers for this reason. The hgl frontend also created pbuffer color buffers as Zink window drawables, with `PIPE_BIND_DISPLAY_TARGET`. Now the size query is skipped for windowless buffers, `eglSwapBuffers()` on a pbuffer is a no-op as EGL 1.5 requires, and windowless buffers get plain render-target and depth textures. `Build.sh` now applies patches to mesa-zink too.
 

@@ -100,14 +100,14 @@ and (with R-6) hot-plug is the interface R-1 defines.
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Boot, GSP firmware 570.133.07, modesetting | Tested on stock Haiku | Not yet run on Renga |
+| Boot, GSP firmware 570.133.07, modesetting | Tested on stock Haiku and on Renga 143b8c30 (2026-11-20) | |
 | Vulkan through NVK (Mesa 26.2.2, X547 `nvrm-event-sync-r4` + patches 0001-0007) | Tested on stock Haiku | OpenCE through Zink runs |
-| Vulkan through NVK on Mesa 26.3 (`renga-26.3`) | Syntax-checked | All of NVK's C sources compile for Haiku with `mesa.sh` (two need `mesa_clc` and are skipped); not built with GCC or run |
+| Vulkan through NVK on Mesa 26.3 (`renga-26.3`) | Tested on Renga 143b8c30 (2026-11-20) | Built with GCC 15.3 on Renga; the RTX 5070 is found (SM 120, 12227 MiB, 16 GiB BAR1); `vk-binary-wait-reuse` passes in both modes |
 | H.264 video decode (Vulkan Video, `NVK_EXPERIMENTAL=video`) | Syntax-checked | NVDEC channels in the RM back end; `renga-test.sh run --video`; see `docs/VIDEO.md` |
 | Video encode (NVENC) | Not possible | No public interface; OBS and Sunshine encode on the CPU. See `docs/VIDEO.md` |
 | NVK patch 0008 (sync slot reuse, reset baseline) | Written | Host tests pass; not built for Haiku |
 | NVK patch 0009 (per-channel stall report) | Written | Host tests pass; not built for Haiku |
-| mesa-zink 0001 (pbuffers without a window) | Written | Not built for Haiku |
+| Zink from the Mesa 26.3 tree (X512's Haiku Zink support carried to `renga-26.3`, with the pbuffer fix); the separate X547 `mesa-zink` checkout is gone | Syntax-checked: all Zink sources, `hgl.c`, `egl_haiku.cpp` | Not built with GCC. The old tree's Zink built and rendered far enough on 2026-11-20 to crash in `eglTerminate` |
 | OBS Studio through Zink | Hangs | Lost-doorbell fix built, not tested. See `docs/event-sync.md`, Open issues |
 | Presentation (VideoStreamsWsi, three rotating bitmaps) | Tested on stock Haiku | Two copies and two waits per frame; rare tearing. `GetFormats` fix (whole `VkSurfaceFormatKHR` entries) applies; not built |
 

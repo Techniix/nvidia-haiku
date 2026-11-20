@@ -1,7 +1,8 @@
 /*
  * OBS-style GL workload through EGL/Zink, as a regression test for the
  * event-sync NVK hang OBS Studio hit (mesa-nvk patch 0008), and for windowless
- * pbuffers (mesa-zink patch 0001).
+ * pbuffers (Techniix/mesa renga-26.3, "egl/haiku, hgl: make pbuffers work
+ * without a window").
  *
  * Mirrors what OBS's libobs-opengl does on Haiku:
  *  - EGL_DEFAULT_DISPLAY, eglBindAPI(EGL_OPENGL_API), a 3.3 core context,

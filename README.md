@@ -20,7 +20,7 @@ It targets GPUs that run NVIDIA's GSP firmware: Turing and newer.
 | Kernel | `nvidia_gsp_modeset` | Hosts NVIDIA's NVKMS (`nv-modeset-kernel.o`) for display. Binds only to an `nvidia_gsp` built from the same NVIDIA release. |
 | User | `nvidia_gsp.accelerant` | app_server accelerant: modes, EDID and the hardware cursor through NVKMS ([docs/hardware-cursor.md](docs/hardware-cursor.md)). |
 | User | Mesa NVK (`mesa-nvk`) | Vulkan driver, with a backend that talks to NVIDIA's RM instead of nouveau. |
-| User | Mesa Zink (`mesa-zink`) | OpenGL on top of Vulkan. |
+| User | Mesa Zink (built from `mesa-nvk`) | OpenGL on top of Vulkan, from the same Mesa tree as NVK, configured a second time for Haiku's EGL. |
 | User | `VideoStreamsWsi` | Vulkan window-system integration for Haiku. |
 | SDK | `nvrm_sdk`, `nvrm_cpp_sdk` | NVIDIA headers and RM/NVKMS ioctl wrappers for the user-space components. |
 

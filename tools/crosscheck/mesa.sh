@@ -117,6 +117,13 @@ PYEOF
 	python3 $N/nir_builder_opcodes_h.py > $gen/nir_builder_opcodes.h
 	python3 $N/nir_intrinsics_h.py --out $gen/nir_intrinsics.h
 	python3 $N/nir_intrinsics_indices_h.py --out $gen/nir_intrinsics_indices.h
+	# Zink's generated tables (Zink on NVK, built from the same tree).
+	if [ -f src/gallium/drivers/zink/zink_device_info.py ]; then
+		python3 src/gallium/drivers/zink/zink_device_info.py \
+			$gen/zink_device_info.h $gen/zink_device_info.c $X
+		python3 src/gallium/drivers/zink/zink_instance.py \
+			$gen/zink_instance.h $gen/zink_instance.c $X
+	fi
 	# NVK's driconf header (Mesa 26.3 and later).
 	if [ -f src/nouveau/vulkan/nvk_drirc_gen.py ]; then
 		python3 src/nouveau/vulkan/nvk_drirc_gen.py --import-path src/util \
@@ -193,7 +200,13 @@ inc=(-I"$M/include" -I"$M/src" -I"$gen" -I"$M/src/nouveau/headers"
 	-I"$nv/src/nvidia/arch/nvalloc/unix/include"
 	-I"$nv/src/common/sdk/nvidia/inc" -I"$nv/src/nvidia/inc/kernel"
 	-I"$M/src/vulkan/runtime" -I"$M/src/vulkan/util" -I"$M/src/vulkan/wsi"
-	-I"$M/src/util" -I"$M/src/compiler" -I"$M/src/compiler/nir")
+	-I"$M/src/util" -I"$M/src/compiler" -I"$M/src/compiler/nir"
+	# Zink, the hgl frontend and the Haiku EGL driver.
+	-I"$M/src/gallium/include" -I"$M/src/gallium/auxiliary"
+	-I"$M/src/gallium/drivers" -I"$M/src/gallium/drivers/zink"
+	-I"$M/src/gallium/frontends/hgl" -I"$M/src/gallium/winsys"
+	-I"$M/src/gallium/winsys/sw" -I"$M/src/egl/main" -I"$M/src/egl"
+	-I"$M/src/mesa" -I"$M/src/mapi")
 
 # Known noise, not from the Haiku code:
 #  -Wno-return-type: nvk_mem_arena.h returns p_atomic_set() from a void

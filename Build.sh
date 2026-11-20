@@ -52,18 +52,38 @@ function buildNvidiaObjects {
 	make -C "$nvDir/src/nvidia-modeset" -j"$jobs" ${NV_MAKE_ARGS:-}
 }
 
+# buildProject <name> [--source <project>] [meson options...]
+# Builds <project> (default: <name>) into build.<arch>/<name>. --source lets
+# one source tree be configured twice: Zink is built from the mesa-nvk tree
+# with its own options.
 function buildProject {
 	projectName="$1"
 	shift
+	local sourceName="$projectName"
+	if [ "${1:-}" = "--source" ]; then
+		sourceName="$2"
+		shift 2
+	fi
 	buildDir="$buildBaseDir/$projectName"
 
 	local dir
-	dir="$(projectDir "$projectName")"
+	dir="$(projectDir "$sourceName")"
 	if [ -z "$dir" ]; then
-		echo "skipping $projectName: not present" >&2
+		echo "skipping $projectName: $sourceName not present" >&2
 		return 0
 	fi
 	cd "$dir"
+
+	# A build directory belongs to one source tree. When the tree changes
+	# (Zink moving from X547's mesa-zink checkout to mesa-nvk), meson
+	# refuses the old directory: start over.
+	if [ -d "$buildDir" ] &&
+			[ "$(cat "$buildDir/.quasar-source-dir" 2>/dev/null)" != "$dir" ]; then
+		if [ -f "$buildDir/meson-private/coredata.dat" ]; then
+			echo "$projectName: now built from $dir, configuring from scratch"
+			rm -rf "$buildDir"
+		fi
+	fi
 
 	# pkg.generate() writes .pc files to <prefix>/<libdir>/pkgconfig
 	# (lib/pkgconfig on Haiku). Meson keeps only the last -Dpkg_config_path,
@@ -100,6 +120,7 @@ function buildProject {
 	if [ -f "$dir/VERSION" ]; then
 		cp "$dir/VERSION" "$buildDir/.quasar-source-version"
 	fi
+	echo "$dir" >"$buildDir/.quasar-source-dir"
 
 	ninja -C "$buildDir"
 	ninja -C "$buildDir" install
@@ -192,18 +213,20 @@ buildProject mesa-nvk "${nvkArgs[@]}" \
 # kernel driver, accelerant and Vulkan driver above do not need it.
 glvndDeps="${DEPS_DIR:-$baseDir/deps.$(getarch)}/install"
 glvndPcPath="$glvndDeps/lib/pkgconfig:$glvndDeps/develop/lib/pkgconfig:/boot/data/packages/libglvnd/build.x86_64/install/develop/lib/pkgconfig"
-if [ -n "$(projectDir mesa-zink)" ] &&
+if [ -n "$(projectDir mesa-nvk)" ] &&
 		! PKG_CONFIG_PATH="$glvndPcPath${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" pkg-config --exists libglvnd; then
 	echo
-	echo "Skipping mesa-zink (OpenGL): libglvnd not found. Everything else is built."
+	echo "Skipping Zink (OpenGL): libglvnd not found. Everything else is built."
 	echo "Run tools/build-glvnd-deps.sh, then Build.sh again, to build Zink too."
 	exit 0
 fi
-applyPatches mesa-zink
-buildProject mesa-zink \
-	-Dpkg_config_path="$glvndPcPath:/boot/data/packages/Vulkan/SPIRV-Tools/build.x86_64/install/lib/pkgconfig" \
+# Zink comes from the same Mesa tree as NVK (Techniix/mesa renga-26.3, where
+# X512's Haiku Zink support is a commit), configured a second time for the
+# Haiku EGL platform. One Mesa: the same Vulkan headers, NIR and fixes for
+# both, and no second, older tree to keep building.
+buildProject mesa-zink --source mesa-nvk \
+	-Dpkg_config_path="$glvndPcPath:$clcDeps/lib/pkgconfig" \
 	-Dplatforms=haiku \
-	-Dgallium-opencl=disabled \
 	-Dgallium-rusticl=false \
 	-Dgallium-drivers=zink \
 	-Dglx=disabled \

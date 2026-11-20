@@ -113,7 +113,7 @@ collect_state() {
 		echo "date: $(date)"
 		echo "quasar tree: $(git -C "$base" rev-parse HEAD 2>/dev/null) ($(git -C "$base" rev-parse --abbrev-ref HEAD 2>/dev/null))"
 		echo "mesa-nvk:    $(git -C "$base/mesa-nvk" rev-parse HEAD 2>/dev/null)"
-		echo "mesa-zink:   $(git -C "$base/mesa-zink" rev-parse HEAD 2>/dev/null)"
+		echo "zink:        built from mesa-nvk"
 		echo "nvidia tree: $(git -C "$base/open-gpu-kernel-modules" rev-parse HEAD 2>/dev/null)"
 		echo "settings file ($settingsFile):"
 		cat "$settingsFile" 2>/dev/null || echo "  (none)"
