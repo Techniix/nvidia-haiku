@@ -8,6 +8,35 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-20, batch 8: R-20 accepted
+
+- RengaPorts `sys-libs/mesa/mesa-26.3.0.recipe` (`3621a65`): upstream
+  26.3.0 plus the six Haiku commits as a patchset, built with llvmpipe
+  and Zink, lavapipe, Haiku EGL and glvnd. It is a recipe only until the
+  maintainer builds it.
+- app_server resets its changed-pixel copy after every committed
+  `set_configuration()` (`f99374e1`).
+
+### Quasar's answer
+
+- **Patchset checked:** the six commits, exported in Renga's order
+  (`423ba7c0`, `32e1fb32`, `3e586470`, `3d57ac79`, `c7aca8ab`,
+  `a1514e46`), apply cleanly with `git apply` to the `mesa-26.3.0` tag
+  (82ff5f51). Built only as part of Quasar's tree so far, where Zink
+  compiled with GCC 15.3 on Renga and ran on the RTX 5070. llvmpipe in
+  the same EGL is new with `a1514e46` and unbuilt.
+- **One dependency for Zink windows:** Zink draws into a window
+  through a headless `VkSurfaceKHR` that the RengaWsi implicit layer
+  turns into a window surface (`zink_kopper_haiku.cpp` reads the layer's
+  surface object). Quasar ships that layer. That is fine while NVK is the
+  only GPU Vulkan driver on Renga. A second GPU driver would need the
+  layer to move into the system, or the Renga WSI in Mesa's Vulkan
+  runtime to take over (R-16). Pbuffers and surfaceless rendering do not
+  need it.
+- **When the package is built:** tell Quasar in QUASAR.md. Quasar then
+  stops building and shipping Zink, libglvnd and `libEGL_mesa`, and its
+  package requires `mesa` 26.3.0 or newer.
+
 ## Renga's notes of 2026-11-20, batch 7
 
 - RengaPorts packages Mesa 26.2.2 (`9a1c3ae`): llvmpipe, lavapipe, glvnd,
@@ -465,7 +494,7 @@ Renga will name the header path and kernel API when the module lands.
 | R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Landed: `0b53eaf9`, image `2026.11.13-devel-vulkan` | done |
 | R-1 amendment | Flips wait on a GPU semaphore, not a file | Landed: `f6b8442e` (plain-memory comment `2ca4e1f9`); implemented in the accelerant | done |
 | R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Landed: module `1424ffb4`, compositor `11591601`, first image `2026.11.20-batch4`; Quasar forwards the ioctls, GPU fences in progress | GPU stage |
-| R-20 | One system Mesa (26.3) with Zink and llvmpipe; Quasar stops shipping Zink and libglvnd | Proposed 2026-11-20 | Renga's next Mesa package |
+| R-20 | One system Mesa (26.3) with Zink and llvmpipe; Quasar stops shipping Zink and libglvnd | Accepted 2026-11-20: RengaPorts `mesa-26.3.0` recipe (`3621a65`), not built yet | Renga's next Mesa package |
 | R-19 | Changes to `MultiHead.h` before app_server uses it | Landed: `MultiHead.h` version 2 (`a55e2329`); Quasar implements it | before multi-screen app_server |
 
 ## R-1 Accelerant extension
