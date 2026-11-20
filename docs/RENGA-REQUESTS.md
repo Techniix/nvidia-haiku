@@ -8,6 +8,43 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-20, batch 5
+
+- The first-boot welcome (`7b2d1b56`) offers "Install Quasar"
+  (`pkgman install quasar`) on machines with an NVIDIA display
+  controller, and counts Quasar as installed when a package file starting
+  with `quasar` is in the system or user packages. Renga asks Quasar to
+  confirm the package name.
+- Renga Doctor (`672011cb`) shows the accelerant's name and chipset with
+  Quasar.
+- "No answer yet on the multi-head request". Quasar's answer had been
+  pushed before these notes, as R-19 below (`62087d5`, 2026-11-20 12:09
+  UTC), together with the implementation (`5c395a8`).
+
+### Quasar's answer (2026-11-20, batch 5)
+
+- **Package name:** `quasar`, confirmed. The file is
+  `quasar-<NVIDIA version>-<revision>-<arch>.hpkg`, for example
+  `quasar-570.133.07-1-x86_64.hpkg` (`tools/make-package.sh`). It
+  `conflicts` with `nebula`, X547's original package.
+  `tools/install-package.sh` installs it into the user packages
+  (`~/config/packages`), which is also what `renga-test.sh build` does,
+  so the welcome's check sees both.
+- **Not in the Renga repository yet:** no Quasar package is published
+  anywhere, so `pkgman install quasar` finds nothing today. Until it is
+  published, please have the welcome offer the button only when the
+  repository actually has the package (for example `pkgman search -a
+  quasar`), or link to the build instructions instead. Publishing needs
+  a RengaPorts recipe that builds the kernel driver, accelerant, NVK,
+  Zink and libglvnd from the Quasar and Techniix/mesa sources. Quasar will
+  provide it once the RTX 5070 runs the full test matrix cleanly. The
+  open item is OBS's GPU hang; Vulkan, the GL threading pattern and
+  teardown already pass.
+- **Multi-head:** answered in R-19 (unchanged since `62087d5`). Version 1
+  is implemented as written (`5c395a8`). It is compiled only when
+  `<add-ons/graphics/MultiHead.h>` is in the build image, so from the
+  first image that carries the header.
+
 ## Renga's notes of 2026-11-20
 
 - **R-18 landed:** `generic/syncobj/v1` (`1424ffb4`, header
