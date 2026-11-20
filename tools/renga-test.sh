@@ -278,6 +278,26 @@ obs_probe_matrix() {
 	( cd "$dir" && NVK_NVRM_DEBUG=1 step obs-gl-probe 120 "$probe" "${common[@]}" )
 	local status=$?
 	[ $status -eq 0 ] && return 0
+	# The 2026-11-20 run: the probe's eglInitialize failed (EGL_NOT_INITIALIZED)
+	# before NVK was even loaded, while OBS itself, in the same directory,
+	# initialised EGL on Zink/NVK. Record which libEGL the probe links and
+	# which ones the loader can find, and run it once with Mesa's and
+	# libglvnd's EGL logging.
+	{
+		echo "--- NEEDED of obs-haiku-gl-probe"
+		objdump -p "$dir/obs-haiku-gl-probe" 2>&1 | grep -E "NEEDED|RPATH|RUNPATH"
+		echo "--- LIBRARY_PATH=$LIBRARY_PATH"
+		echo "--- libEGL files"
+		ls -l /boot/home/config/non-packaged/lib/libEGL* /boot/home/config/lib/libEGL* \
+			/boot/system/non-packaged/lib/libEGL* /boot/system/lib/libEGL* \
+			"$dir"/lib/libEGL* 2>&1
+		echo "--- EGL vendor files"
+		ls -l /boot/home/config/add-ons/opengl/egl_vendor.d \
+			/boot/system/data/glvnd/egl_vendor.d /boot/home/config/data/glvnd/egl_vendor.d 2>&1
+	} >"$report/obs-gl-probe-linkage.txt"
+	( cd "$dir" && NVK_NVRM_DEBUG=1 EGL_LOG_LEVEL=debug __EGL_VENDOR_LIBRARY_DEBUG=1 \
+		LIBGL_DEBUG=verbose MESA_DEBUG=1 \
+		capture obs-gl-probe-egl-debug "$probe" "${common[@]}" )
 	local opt
 	for opt in --no-stage --no-stream --no-second-display --no-handoff \
 			--fences "--fps 0"; do
@@ -345,13 +365,27 @@ do_run() {
 
 	if [ -n "$obsDir" ] && [ -x "$obsDir/obs" ]; then
 		echo
+		# NVK_DEBUG=push_sync: NVK waits for every submission and, when one has
+		# not finished after NVK_NVRM_PUSH_SYNC_TIMEOUT seconds, prints its
+		# commands and reports the device lost. On 2026-11-20 OBS's GPU work
+		# stopped 3 s in (fence 13 of 14, no RC error, no pending acquire), so
+		# this run is for the commands that hang. OBS is slower with it.
+		local obsDebug=(NVK_DEBUG=push_sync NVK_NVRM_PUSH_SYNC_TIMEOUT=10)
+		[ "${QUASAR_OBS_PUSH_SYNC:-1}" = 0 ] && obsDebug=()
 		echo "------------------------------------------------------------------"
 		echo "OBS will start on the GPU path with its watchdog off."
+		if [ ${#obsDebug[@]} -gt 0 ]; then
+			echo "NVK's push_sync debugging is on: OBS is slow, and it may stop with"
+			echo "a device-lost error. That is expected; it is how the hang is printed."
+		fi
 		echo "  1. Add a Screen Capture source (Sources, +, Screen Capture, OK)."
 		echo "  2. Wait until it freezes, or one minute if it keeps working."
 		echo "  3. Come back to this Terminal and press Enter."
+		echo "The report is packed before OBS is closed: if the machine freezes"
+		echo "while OBS is being closed, the zip is already on disk."
 		echo "------------------------------------------------------------------"
-		( cd "$obsDir" && OBS_HAIKU_GL=egl OBS_HAIKU_GL_WATCHDOG=0 NVK_NVRM_DEBUG=1 RENGA_WSI_DEBUG=1 \
+		( cd "$obsDir" && env "${obsDebug[@]}" OBS_HAIKU_GL=egl OBS_HAIKU_GL_WATCHDOG=0 \
+			NVK_NVRM_DEBUG=1 RENGA_WSI_DEBUG=1 \
 			./obs --verbose >"$report/obs-run.txt" 2>&1 ) &
 		local obsShell=$!
 		sleep 20
@@ -363,12 +397,20 @@ do_run() {
 		# the full channel state again every 30 s).
 		[ "$answer" = h ] && { echo "Waiting 35 s for the driver's stall report"; sleep 35; }
 		echo "obs: user answered '$answer' (h = it froze)" >>"$report/summary.txt"
+		grep -c "CPU wait not satisfied" "$report/obs-run.txt" 2>/dev/null \
+			| sed 's/^/obs: stall reports in obs-run.txt: /' >>"$report/summary.txt"
+		# Closing a process whose GPU channel is hung froze the whole machine
+		# on 2026-11-20. Save everything first.
+		report="$report/before-obs-exit" collect_state
+		pack_report
+		sync
+		echo "Closing OBS. If the machine freezes now, the report above is complete:"
+		echo "reboot and send it."
 		kill_named TERM obs
 		sleep 3
 		kill_named KILL obs
 		kill "$obsShell" 2>/dev/null
-		grep -c "CPU wait not satisfied" "$report/obs-run.txt" 2>/dev/null \
-			| sed 's/^/obs: stall reports in obs-run.txt: /' >>"$report/summary.txt"
+		echo "obs: closed without freezing the machine" >>"$report/summary.txt"
 		local obsLogs="$HOME/config/settings/obs-studio/logs"
 		if [ -d "$obsLogs" ]; then
 			mkdir -p "$report/obs-logs"

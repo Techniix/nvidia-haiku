@@ -21,12 +21,14 @@ typedef struct { uint32_t GPPut, GPGet; } KeplerBControlGPFifo;
 struct nvkmd_mem { void *map; };
 struct nvkmd_nvrm_dev { simple_mtx_t sync_mutex; };
 #define NVRM_CHAN_SEM_LOG 16
+#define NVRM_CTX_GPFIFO_ENTRIES 0x8000
 struct nvkmd_nvrm_sem_record { const volatile uint64_t *word; uint64_t addr, value, fence; };
 struct nvkmd_nvrm_channel {
    struct nvkmd_nvrm_dev *dev; const char *kind;
    struct nvkmd_nvrm_sem_record acqLog[NVRM_CHAN_SEM_LOG], relLog[NVRM_CHAN_SEM_LOG];
    uint32_t acqLogNext, relLogNext;
    struct nvkmd_mem *notifier, *userD, *sem; uint64_t wSeq;
+   uint64_t gpPut;   /* what this process last wrote to USERD GPPut */
 };
 uint64_t nvkmd_nvrm_channel_completed(const struct nvkmd_nvrm_channel *c){ return *(volatile uint64_t*)c->sem->map; }
 #include EXTRACTED
