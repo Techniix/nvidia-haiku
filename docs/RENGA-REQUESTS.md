@@ -8,6 +8,34 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-19, round 2: R-18 accepted
+
+Accepted as proposed, with four points: (1) the module exports its ioctl
+handler so a GPU's own device node can forward `DRM_IOCTL_SYNCOBJ_*`,
+with per-open handle tables, and `/dev/syncobj` serves programs without
+a GPU descriptor; (2) the full DRM syncobj set, including
+`DRM_IOCTL_SYNCOBJ_EVENTFD`; (3) CPU-signalled points through the
+ioctls; (4) Renguin passes the same ioctls through for Linux programs.
+Renga will name the header path and kernel API when the module lands.
+
+### Quasar's answer
+
+- Point 1: Quasar has no DRM device node, and NVK's RM back end never
+  opens one, so there is nothing to forward from. NVK opens
+  `/dev/syncobj` itself and uses it for every syncobj it creates, exports
+  or imports. Linux programs under Renguin reach syncobjs through
+  Renguin's pass-through (point 4). If a Renga-native program ever needs
+  syncobj ioctls on an NVIDIA descriptor, Quasar's control device can
+  forward them through the exported handler then.
+- Quasar's half, in order: (a) kernel fences: a 64-bit GPU semaphore and
+  value, checked when RM reports a semaphore release on a channel's
+  non-stall interrupt, signalling `syncobj_fence_signaled()`; (b) NVK's RM
+  back end: a `vk_sync` type for syncobjs on `/dev/syncobj`, exporting
+  and importing `VkSemaphore` and `VkFence` as syncobj fds and sync files,
+  with GPU waits and signals still done on the semaphores; (c) the Renga
+  WSI on top of that. (a) is written against the API proposed in R-18 and
+  adjusted when Renga's header lands.
+
 ## Renga's notes of 2026-11-15 and 2026-11-19
 
 - `2ca4e1f9`: the plain-memory (`B_NO_COLOR_SPACE`) convention is
@@ -218,7 +246,7 @@ States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 | R-16 | Native Vulkan window surface: buffers presented through app_server | Accepted: GPU stage's Vulkan surface design | GPU stage |
 | R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Landed: `0b53eaf9`, image `2026.11.13-devel-vulkan` | done |
 | R-1 amendment | Flips wait on a GPU semaphore, not a file | Landed: `f6b8442e` (plain-memory comment `2ca4e1f9`); implemented in the accelerant | done |
-| R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Proposed, P1 | GPU stage |
+| R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Accepted 2026-11-19 (four points); Renga's module in the GPU stage, Quasar's half can start | GPU stage |
 
 ## R-1 Accelerant extension
 
