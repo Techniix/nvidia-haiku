@@ -39,19 +39,22 @@ if [ "$(uname -s)" != Haiku ]; then
 	exit 1
 fi
 
-# command  provides-name-for-pkgman
+# command  what to ask pkgman for: a provides name, or a package name where
+# several packages provide the command (HaikuPorts' cmake and cmake3 both
+# provide cmd:cmake, which pkgman can't choose between).
+# vulkaninfo isn't listed: HaikuPorts has no Vulkan tools package, and the
+# test script records it only when it is installed.
 tools=(
 	"git cmd:git"
 	"meson cmd:meson"
 	"ninja cmd:ninja"
-	"cmake cmd:cmake"
+	"cmake cmake"
 	"python3 cmd:python3"
 	"pkg-config cmd:pkg_config"
 	"bison cmd:bison"
 	"flex cmd:flex"
 	"zip cmd:zip"
 	"strings cmd:strings"
-	"vulkaninfo cmd:vulkaninfo"
 )
 missing=()
 for t in "${tools[@]}"; do
