@@ -49,7 +49,6 @@ tools=(
 	"pkg-config cmd:pkg_config"
 	"bison cmd:bison"
 	"flex cmd:flex"
-	"glslangValidator cmd:glslangValidator"
 	"zip cmd:zip"
 	"strings cmd:strings"
 	"vulkaninfo cmd:vulkaninfo"
@@ -154,7 +153,13 @@ fi
 fail() { echo "renga-setup: $*" >&2; exit 1; }
 
 if [ ${#missing[@]} -gt 0 ]; then
-	pkgman install -y "${missing[@]}" || fail "pkgman could not install: ${missing[*]}"
+	# One package at a time: pkgman installs a list as one transaction, so a
+	# single name it can't resolve would block all the others.
+	failed=()
+	for p in "${missing[@]}"; do
+		pkgman install -y "$p" || failed+=("$p")
+	done
+	[ ${#failed[@]} -eq 0 ] || fail "pkgman could not install: ${failed[*]}"
 fi
 if [ $mesonOld = 1 ]; then
 	pkgman update -y meson || fail "could not update meson to 1.5.0 or later"
