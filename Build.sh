@@ -77,12 +77,11 @@ function buildProject {
 	# A build directory belongs to one source tree. When the tree changes
 	# (Zink moving from X547's mesa-zink checkout to mesa-nvk), meson
 	# refuses the old directory: start over.
-	if [ -d "$buildDir" ] &&
-			[ "$(cat "$buildDir/.quasar-source-dir" 2>/dev/null)" != "$dir" ]; then
-		if [ -f "$buildDir/meson-private/coredata.dat" ]; then
-			echo "$projectName: now built from $dir, configuring from scratch"
-			rm -rf "$buildDir"
-		fi
+	# meson-info.json records the source directory of every configured build.
+	if [ -f "$buildDir/meson-info/meson-info.json" ] &&
+			! grep -q "\"source\": *\"$dir\"" "$buildDir/meson-info/meson-info.json"; then
+		echo "$projectName: now built from $dir, configuring from scratch"
+		rm -rf "$buildDir"
 	fi
 
 	# pkg.generate() writes .pc files to <prefix>/<libdir>/pkgconfig
@@ -120,7 +119,6 @@ function buildProject {
 	if [ -f "$dir/VERSION" ]; then
 		cp "$dir/VERSION" "$buildDir/.quasar-source-version"
 	fi
-	echo "$dir" >"$buildDir/.quasar-source-dir"
 
 	ninja -C "$buildDir"
 	ninja -C "$buildDir" install
