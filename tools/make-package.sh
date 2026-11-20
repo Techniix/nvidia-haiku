@@ -166,16 +166,42 @@ while IFS= read -r -d '' f; do
 done < <(find "$stage" -path "$stage/data/firmware" -prune -o -type f -print0)
 note "stripped debug info from $stripped files"
 
-# Each library the package needs must come from the package or from one of
-# the packages listed in requires.
-requires=(
-	"haiku"
-	"lib:libz"
-	"lib:libzstd"
-	"lib:libwayland_client"
-	"lib:libSPIRV_Tools"
-	"lib:libexpat"
-)
+# requires: every shared library the package's binaries name (NEEDED) that
+# the package does not carry itself, plus the libraries that are opened at
+# run time rather than linked. Taken from the binaries instead of a list, so
+# the package installs on a fresh image: the hand-written list it replaces
+# named SPIRV-Tools, which is linked statically and has no package in the
+# repositories, and missed libelf, which NVK links. With the right
+# requires, "pkgman install quasar-....hpkg" fetches whatever is missing.
+objdump="${OBJDUMP:-objdump}"
+command -v "$objdump" >/dev/null || die "'$objdump' not found (binutils)"
+# Libraries in Haiku's own "haiku" package.
+haikuLibs=" libroot libbe libnetwork libbsd libgnu libtracker libmedia libtranslation libdevice libpackage libtextencoding libgame libgame _KERNEL_ "
+declare -A carried=()
+declare -A neededLibs=()
+while IFS= read -r -d '' f; do
+	head -c 4 "$f" | grep -q $'\x7fELF' || continue
+	carried["$(basename "$f")"]=1
+	soname="$("$objdump" -p "$f" 2>/dev/null | awk '$1 == "SONAME" {print $2}')"
+	[ -n "$soname" ] && carried["$soname"]=1
+	while read -r lib; do
+		neededLibs["$lib"]=1
+	done < <("$objdump" -p "$f" 2>/dev/null | awk '$1 == "NEEDED" {print $2}')
+done < <(find "$stage" -path "$stage/data/firmware" -prune -o \( -type f -o -type l \) -print0)
+requires=("haiku")
+for lib in "${!neededLibs[@]}"; do
+	[ -n "${carried[$lib]:-}" ] && continue
+	base="${lib%%.so*}"
+	case "$haikuLibs" in *" $base "*) continue ;; esac
+	# Haiku's provides spell a soname's dashes as underscores:
+	# libwayland-client.so.0 is lib:libwayland_client.
+	requires+=("lib:${base//-/_}")
+done
+# Opened at run time: Zink loads the Vulkan loader, which loads NVK and the
+# window-system layer.
+requires+=("lib:libvulkan")
+mapfile -t requires < <(printf '%s\n' "${requires[@]}" | sort -u)
+note "requires: ${requires[*]}"
 provides=("$name = $version")
 if [ $withZink = 1 ]; then
 	provides+=("lib:libGL = 1.0.0 compat >= 1" "lib:libEGL = 1.1.0 compat >= 1" "lib:libGLdispatch" "lib:libOpenGL")
