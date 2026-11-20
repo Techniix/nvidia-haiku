@@ -1,6 +1,7 @@
 #include "BaseDevice.h"
 #include "Device.h"
 #include "Driver.h"
+#include "Syncobj.h"
 
 #include <new>
 
@@ -62,6 +63,14 @@ NvHaikuBaseDeviceHandle::~NvHaikuBaseDeviceHandle()
 
 	rm_cleanup_file_private(nullptr, &fDevice->fNvState, &fNvfp);
 
+#if QUASAR_HAVE_SYNCOBJ
+	// The free hook: no request can still be running on this descriptor.
+	// Objects shared through descriptors or other files live on.
+	if (fSyncobjFile != nullptr)
+		NvHaikuDriver::Instance().Syncobj()->close_file(fSyncobjFile);
+#endif
+	mutex_destroy(&fSyncobjLock);
+
     if (fMmapContext.valid)
     {
         if (fMmapContext.page_array != nullptr)
@@ -73,6 +82,44 @@ NvHaikuBaseDeviceHandle::~NvHaikuBaseDeviceHandle()
             free(fMmapContext.memArea.pRanges);
         }
     }
+}
+
+/*!	Forwards DRM_IOCTL_SYNCOBJ_* to Renga's syncobj module (R-18), with this
+	descriptor's own handle table, so Mesa's DRM syncobj code and libdrm
+	work on the descriptor NVK opened. Returns B_DEV_INVALID_IOCTL for any
+	other request, or when the module is not available.
+
+	The table is created on first use rather than in the open hook: most
+	descriptors (the accelerant's, nvidia-smi style tools) never use sync
+	objects, and creating it later changes nothing a program can observe.
+*/
+status_t NvHaikuBaseDeviceHandle::SyncobjIoctl(uint32 op, void *data, size_t len)
+{
+#if QUASAR_HAVE_SYNCOBJ
+	syncobj_module_info *module = NvHaikuDriver::Instance().Syncobj();
+	if (module == nullptr || !module->is_syncobj_ioctl(op))
+		return B_DEV_INVALID_IOCTL;
+
+	syncobj_file *file;
+	{
+		MutexLocker locker(fSyncobjLock);
+		if (fSyncobjFile == nullptr) {
+			status_t status = module->open_file(&fSyncobjFile);
+			if (status < B_OK) {
+				fSyncobjFile = nullptr;
+				return status;
+			}
+		}
+		file = fSyncobjFile;
+	}
+
+	// The module copies from and to the caller's buffer itself (user or
+	// kernel address, as we got it) and takes the size from op.
+	return module->ioctl(file, op, data, len);
+#else
+	(void)op; (void)data; (void)len;
+	return B_DEV_INVALID_IOCTL;
+#endif
 }
 
 status_t NvHaikuBaseDeviceHandle::Close()
@@ -100,6 +147,15 @@ status_t NvHaikuBaseDeviceHandle::Control(uint32 op, void *data, size_t len)
 		}
 		default:
 			break;
+	}
+
+	// DRM_IOCTL_SYNCOBJ_* use Linux's encoding ('d' type, size in the high
+	// bits), far above NV_HAIKU_BASE and the NV_ESC_* range, so they cannot
+	// be mistaken for RM requests; ask the module before anything else.
+	{
+		status_t status = SyncobjIoctl(op, data, len);
+		if (status != B_DEV_INVALID_IOCTL)
+			return status;
 	}
 
 	if (op < NV_HAIKU_BASE)

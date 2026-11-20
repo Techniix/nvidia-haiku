@@ -11,6 +11,7 @@
 #include "nv-haiku.h"
 
 struct select_sync_pool;
+struct syncobj_file;
 
 
 struct nv_alloc_t {
@@ -52,6 +53,14 @@ protected:
 
 	nv_alloc_mapping_context_t fMmapContext {};
 
+	// This descriptor's DRM sync object handle table (Renga's syncobj
+	// module), created by the first syncobj ioctl. Handles are per open
+	// descriptor, as on Linux.
+	mutex fSyncobjLock = MUTEX_INITIALIZER("NvHaikuSyncobjFile");
+	syncobj_file* fSyncobjFile {};
+
+	status_t SyncobjIoctl(uint32 op, void *data, size_t len);
+
 public:
 	NvHaikuBaseDeviceHandle(NvHaikuBaseDevice *device);
 	~NvHaikuBaseDeviceHandle();
@@ -61,6 +70,9 @@ public:
 	inline nv_file_private_t &Nvfp() {return fNvfp;}
 	inline nv_alloc_mapping_context_t &MmapContext() {return fMmapContext;}
 	NvHaikuBaseDevice *GetBaseDevice() const {return fDevice;}
+	// The handle table for the submit path's find_fence()/replace_fence(),
+	// or nullptr if this descriptor never used a sync object.
+	syncobj_file *SyncobjFile() const {return fSyncobjFile;}
 
 	inline void SetDatalessEventPending();
 	void NotifySelectPool();

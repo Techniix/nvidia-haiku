@@ -10,6 +10,8 @@
 #include "IntrSafePool.h"
 #include "WorkQueue.h"
 
+struct syncobj_module_info;
+
 
 class NvHaikuControlDevice;
 class NvHaikuDevice;
@@ -18,6 +20,7 @@ class NvHaikuDevice;
 class NvHaikuDriver {
 private:
 	pci_module_info *fPCI {};
+	syncobj_module_info *fSyncobj {};
 	class IntrSafePool fIntrSafePool;
 	NvHaikuWorkQueue fWorkQueue;
 
@@ -35,6 +38,9 @@ public:
 
 	static NvHaikuDriver &Instance() {return sInstance;}
 	pci_module_info &PCI() {return *fPCI;}
+	// Renga's generic/syncobj/v1 module, or nullptr if it is not
+	// installed (images before Renga 1424ffb4).
+	syncobj_module_info *Syncobj() {return fSyncobj;}
 	class IntrSafePool &IntrSafePool() {return fIntrSafePool;}
 	NvHaikuWorkQueue &WorkQueue() {return fWorkQueue;}
 

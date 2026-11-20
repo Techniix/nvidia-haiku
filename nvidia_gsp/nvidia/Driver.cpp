@@ -12,6 +12,7 @@
 
 #include "ControlDevice.h"
 #include "Device.h"
+#include "Syncobj.h"
 
 
 #define CHECK_RET(err) {status_t _err = (err); if (_err < B_OK) return _err;}
@@ -83,6 +84,12 @@ NvHaikuDriver::~NvHaikuDriver()
 
 	fIntrSafePool.ReclaimAll();
 
+#if QUASAR_HAVE_SYNCOBJ
+	if (fSyncobj != nullptr) {
+		put_module(B_SYNCOBJ_MODULE_NAME);
+	}
+#endif
+
 	if (fPCI != nullptr) {
 		put_module(B_PCI_MODULE_NAME);
 	}
@@ -93,6 +100,22 @@ status_t NvHaikuDriver::Init()
 	dprintf("+NvHaikuDriver\n");
 
 	CHECK_RET(get_module(B_PCI_MODULE_NAME, (module_info**)&fPCI));
+
+	// Renga's DRM sync objects (R-18). Every open descriptor of our devices
+	// gets its own handle table from the module, so Mesa's DRM syncobj code
+	// works on the descriptor NVK already has, and the submit path can
+	// attach GPU fences to the handles the program passes in. Without the
+	// module the syncobj ioctls are simply not answered.
+#if QUASAR_HAVE_SYNCOBJ
+	if (get_module(B_SYNCOBJ_MODULE_NAME, (module_info**)&fSyncobj) < B_OK) {
+		dprintf("nvidia: %s not found, DRM sync objects unavailable\n",
+			B_SYNCOBJ_MODULE_NAME);
+		fSyncobj = nullptr;
+	}
+#else
+	dprintf("nvidia: built without <syncobj_module.h>, DRM sync objects "
+		"unavailable\n");
+#endif
 
 	fIntrSafePool.Maintain();
 

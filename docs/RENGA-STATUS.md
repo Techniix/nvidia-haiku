@@ -68,6 +68,7 @@ workarounds still in the tree, why each exists, and what removes it.
 | ~~Quasar's own declarations of `user_fd_kernel_ioctl()`~~ | | Removed: `<fs/fd.h>` is right since Renga `0b53eaf9` | — |
 | ~~Copies of `GpuPresent.h` and `HardwareCursor.h`~~ | | Removed: Renga images from `2026.11.13-devel-vulkan` install both; `renga-setup.sh` checks for them | — |
 | CPU waits in NVK's RM sync code use OS event objects and timed polling | No futex | `futex()` (R-3) | Renga F-49 |
+| `<syncobj_module.h>` optional at build time (`nvidia_gsp/nvidia/Syncobj.h`) | Image 143b8c30, used by the current hardware tests, predates Renga's syncobj module (`1424ffb4`) | The header required, and setup's image check asking for an image that has it | A Renga image with the module |
 | Doorbells rung again after a 3 s CPU stall | Recovery and diagnosis for a lost-doorbell bug | Removed once a hardware run shows the submit fences prevent it | A hardware run |
 
 Not workarounds, though they may look like one: bounding GPFIFO reuse by the
@@ -90,6 +91,7 @@ and (with R-6) hot-plug is the interface R-1 defines.
 | GPU presentation interface, driver half (R-1) | Syntax-checked | Follows Renga's `<add-ons/graphics/GpuPresent.h>` (`744fa9b4`); `wait_fd` and repeating vblank events implemented; events on one eventfd; see Display |
 | `nvkms_get_per_open_data()` (second-descriptor NVKMS ioctls) | Syntax-checked | Was `return NULL` |
 | NVK: fence the USERD `GPPut` write and the doorbell; ring stalled channels again and report it | Syntax-checked | Candidate for the OBS hang |
+| DRM sync object ioctls forwarded to Renga's `syncobj` module on every Quasar descriptor (R-18), one handle table per open descriptor | Syntax-checked against Renga a1a83da2, with and without the header | Not run: needs an image with the module |
 | RM caching type `UNCACHED_WEAK` maps uncached, not write-back | Syntax-checked | `to_haiku_cache_type()` fell through to 0 for it; unknown types now map uncached with a log line |
 
 ## Inherited from `rtx5070-event-sync`

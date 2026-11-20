@@ -8,6 +8,51 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-20
+
+- **R-18 landed:** `generic/syncobj/v1` (`1424ffb4`, header
+  `<syncobj_module.h>`), `/dev/syncobj`, Renguin pass-through;
+  `zwp_linux_dmabuf_v1` version 4 and `wp_linux_drm_syncobj_manager_v1` in
+  the compositor (`11591601`). QEMU-tested, CPU-signalled fences only.
+- **Batch 3** (`2026.11.20-batch3`) changed nothing for Quasar; the rest of
+  the GPU stage and the Screen → Displays panel are first in the next GPU
+  batch.
+- **New request to Quasar:** offer `<add-ons/graphics/MultiHead.h>`
+  (`multi_head_hooks`, `B_MULTI_HEAD_HOOKS` 0x52474200, provisional
+  version 1) for the RTX 5070's outputs, and say what must change before
+  app_server uses it. That is R-19 below.
+
+### Quasar's answer (2026-11-20)
+
+- **R-18, render node:** this replaces Quasar's answer of 11-19 (that
+  NVK would use `/dev/syncobj` and nothing needed forwarding). With the
+  module's per-file handle tables, forwarding is the better design: NVK's
+  RM back end keeps using the descriptor it already has, Mesa's generic
+  DRM syncobj code works on it unchanged, and Quasar's submit path can call
+  `find_fence()`/`replace_fence()` on the very handles the program passed
+  in, which a `/dev/syncobj` handle would not allow. Every descriptor of
+  Quasar's devices (`/dev/nvidiactl` and the per-GPU nodes) now forwards
+  each request `is_syncobj_ioctl()` accepts, with its own `syncobj_file`
+  (`open_file()` on the first such request, `close_file()` in the free
+  hook). Without the module the requests are not answered.
+- **R-18, image:** which image is the first to carry
+  `<syncobj_module.h>` and the module? Until Quasar's setup can require
+  that image, the driver builds without the header and leaves sync
+  objects off (`nvidia_gsp/nvidia/Syncobj.h`), so the image the current
+  hardware tests run on (143b8c30) keeps building.
+- **R-18, `main_device`:** Quasar has no DRM render node, and none is
+  planned: the per-GPU node is `/dev/graphics/nvidia_gsp/<n>` (a Haiku
+  device node, not `/dev/dri`). Its `dev_t` is whatever `stat()` returns
+  for that path on the running system; NVK's Wayland code can report it.
+  Linux clients that open `/dev/dri/renderD*` from `main_device` are a
+  Renguin question, not a Quasar one.
+- **R-18, Quasar's remaining half:** GPU-signalled fences (a kernel fence
+  per submission, signalled from RM's non-stall interrupt when the
+  channel's semaphore reaches the value) and NVK's use of syncobjs on its
+  descriptor. In progress; nothing to ask of Renga for it.
+- **MultiHead.h:** Quasar implements version 1 as written; the changes
+  it needs before app_server uses the table are R-19.
+
 ## Renga's notes of 2026-11-19, round 2: R-18 accepted
 
 Accepted as proposed, with four points: (1) the module exports its ioctl
@@ -233,7 +278,7 @@ Renga will name the header path and kernel API when the module lands.
 | R-3 | `futex()` wait/wake | Scheduled: F-49 | F-49 |
 | R-4 | Game mode notifications for drivers | Scheduled: F-50 (Renga proposes the interface) | F-50 |
 | R-5 | Long-term pinning of user pages for device DMA | Accepted in principle: GPU stage | F-35 (NVK coverage), F-48 |
-| R-6 | Several displays and hot-plug (display hooks, app_server screens) | Proposed, P1 | GPU stage |
+| R-6 | Several displays and hot-plug (display hooks, app_server screens) | Superseded by Renga's `MultiHead.h` (2026-11-20); remaining points are R-19 | GPU stage |
 | R-7 | Variable refresh rate | Proposed, P1 | GPU stage |
 | R-8 | Resizable BAR in the PCI bus manager | Proposed, P1 | GPU stage |
 | R-9 | Shutdown and suspend/resume for drivers | Proposed: shutdown P1, suspend P2 | GPU stage |
@@ -246,7 +291,8 @@ Renga will name the header path and kernel API when the module lands.
 | R-16 | Native Vulkan window surface: buffers presented through app_server | Accepted: GPU stage's Vulkan surface design | GPU stage |
 | R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Landed: `0b53eaf9`, image `2026.11.13-devel-vulkan` | done |
 | R-1 amendment | Flips wait on a GPU semaphore, not a file | Landed: `f6b8442e` (plain-memory comment `2ca4e1f9`); implemented in the accelerant | done |
-| R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Accepted 2026-11-19 (four points); Renga's module in the GPU stage, Quasar's half can start | GPU stage |
+| R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Landed: module `1424ffb4`, compositor `11591601`; Quasar forwards the ioctls, GPU fences in progress | GPU stage |
+| R-19 | Changes to `MultiHead.h` before app_server uses it | Proposed 2026-11-20 | before multi-screen app_server |
 
 ## R-1 Accelerant extension
 
@@ -859,6 +905,78 @@ everyone else.
 
 The open question to Renga: is this the shape you want for the compositor
 and `GpuSurface`, before Quasar starts on its half?
+
+### R-19 Changes to `MultiHead.h` (P1, before app_server uses it)
+
+Renga's provisional `<add-ons/graphics/MultiHead.h>` (version 1) covers
+most of R-6. Quasar implements it as written. These changes are needed
+before app_server starts calling it, because NVKMS (and display hardware
+generally) works this way:
+
+1. **Numbers are outputs, not hardware heads.** The RTX 5070 has four
+   connectors (three DisplayPort, one HDMI) and four hardware heads, but
+   DisplayPort MST can put more displays behind one connector than there
+   are heads, and NVKMS chooses the hardware head for an output when the
+   mode is set. Proposed wording: the table's "head" numbers are display
+   outputs. A physical connector keeps its number while the GPU is
+   present. MST displays get numbers after the connectors, and
+   `count_heads()` may change after `event_fd()` fires. At most as many
+   outputs as there are hardware heads can be enabled at once; enabling
+   one more fails with `B_BUSY`. `GpuPresent.h`'s `head` arguments are
+   these output numbers, and the accelerant maps them to hardware heads.
+   Quasar implements version 1 this way already; only the comment
+   changes.
+2. **All outputs in one call.** The display engine validates a whole
+   configuration: outputs share display bandwidth and clocks (NVKMS's
+   IMP check), so a mode on one output can be impossible only because of
+   another output's mode. With one `set_head_mode()` per output, some
+   changes cannot be made in any order, for example moving from 4K at
+   144 Hz on output A and 1080p on B to the reverse. NVKMS validates and
+   applies all heads in one request. Proposed (as in R-6), appended to the
+   table:
+
+   ```c
+   typedef struct {
+   	uint32		head;			// output number
+   	uint32		flags;			// B_HEAD_CONFIG_*
+   	display_mode mode;			// ignored without B_HEAD_CONFIG_ENABLED
+   	uint32		source_head;	// mirroring: scan out this output's
+   								// frame buffer (== head: its own)
+   	uint32		_reserved[3];
+   } multi_head_config;
+
+   enum {
+   	B_HEAD_CONFIG_ENABLED	= 0x01,
+   	B_HEAD_CONFIG_ALLOW_VRR	= 0x02,	// R-7: NVKMS needs VRR at mode set
+   	B_HEAD_CONFIG_TEST_ONLY	= 0x04	// validate, change nothing
+   };
+
+   status_t (*set_configuration)(const multi_head_config* configs,
+   				uint32 count);
+   	// every output not listed is turned off; applied together or not
+   	// at all (B_BAD_VALUE leaves everything as it was)
+   ```
+
+   `set_head_mode()` can stay as a shorthand for one output.
+3. **Mirroring.** `set_head_mode()` has no way to name another output's
+   frame buffer, so the header's "two heads scanning out the same frame
+   buffer" cannot be requested. `source_head` above covers it.
+4. **VRR at mode-set time.** NVKMS enables VRR only when the mode is set,
+   so the configuration needs `B_HEAD_CONFIG_ALLOW_VRR` (R-7);
+   `B_GPU_FLIP_VRR` then asks for it per flip.
+5. **Cursor image.** The table has per-output position and visibility.
+   Please state that the image is the classic hooks' (`B_SET_CURSOR_BITMAP`
+   and `B_SET_CURSOR_SHAPE`), shared by all outputs, and that
+   `move_head_cursor()` takes output-local coordinates. That is how Quasar
+   implements it.
+6. **Small points.** `max_refresh_mhz` and `min_refresh_mhz` are in
+   millihertz, but "mhz" reads as megahertz; `_millihz` would avoid the
+   mix-up. Two `_reserved` fields of `multi_head_info` could become
+   `max_bpc` and `gamma_size` now, for R-11 and R-15, so version 2 is not
+   needed for them.
+
+A separate `event_fd()` from `gpu_present_hooks::event_fd()` is fine;
+Quasar serves both from the same NVKMS event stream.
 
 ## Upstream header bug: `user_fd_kernel_ioctl()`
 
