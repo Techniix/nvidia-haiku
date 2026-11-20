@@ -324,6 +324,10 @@ upload_thread(void *arg)
 int
 main(int argc, char **argv)
 {
+	/* Line-buffered even into a file: if teardown crashes (as Zink's did on
+	 * the first Renga run), the PASS/FAIL line must already be written. */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
 	double seconds = 20;
 	bool usePbuffer = false;
 	for (int i = 1; i < argc; i++) {
@@ -430,9 +434,13 @@ main(int argc, char **argv)
 	       (unsigned long long)gFrames, gFrames / elapsed,
 	       (unsigned long long)gUploads);
 
+	/* Teardown is checked separately from rendering: a crash past this
+	 * point is a cleanup bug, not a rendering one. */
+	printf("teardown: eglTerminate\n");
 	if (gSurf != EGL_NO_SURFACE)
 		eglDestroySurface(gDpy, gSurf);
 	eglDestroyContext(gDpy, gCtx);
 	eglTerminate(gDpy);
+	printf("teardown: done\n");
 	return 0;
 }

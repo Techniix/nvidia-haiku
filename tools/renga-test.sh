@@ -258,6 +258,11 @@ probe_matrix() {
 	NVK_NVRM_DEBUG=1 MESA_VK_ENABLE_SUBMIT_THREAD=0 step "$name.no-submit-thread" "$limit" "$@"
 	NVK_NVRM_DEBUG=1 ZINK_DEBUG=flushsync step "$name.zink-flushsync" "$limit" "$@"
 	NVK_NVRM_DEBUG=1 GALLIUM_THREAD=0 step "$name.no-gallium-thread" "$limit" "$@"
+	#   no shader cache    - the disk cache and Zink's cache queues (the
+	#                        first Renga run crashed in eglTerminate, in
+	#                        util_queue_finish on one of those queues)
+	NVK_NVRM_DEBUG=1 MESA_SHADER_CACHE_DISABLE=true \
+		step "$name.no-shader-cache" "$limit" "$@"
 	return $status
 }
 
