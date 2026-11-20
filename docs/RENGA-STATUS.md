@@ -70,7 +70,7 @@ workarounds still in the tree, why each exists, and what removes it.
 | CPU waits in NVK's RM sync code use OS event objects and timed polling | No futex | `futex()` (R-3) | Renga F-49 |
 | `<add-ons/graphics/MultiHead.h>` optional at build time (`QUASAR_HAVE_MULTI_HEAD`, `accelerant/NvMultiHead.h`) | Same image: the header landed on 2026-11-20 | The header required with the image check | A Renga image with the header |
 | `<syncobj_module.h>` optional at build time (`nvidia_gsp/nvidia/Syncobj.h`) | Image 143b8c30, used by the current hardware tests, predates Renga's syncobj module (`1424ffb4`) | The header required, and setup's image check asking for an image that has it | A Renga image with the module |
-| ~~(see below)~~ OBS Studio: GPU work stops about 3 s after startup (fence 13 of 14, no RC error, no pending acquire; re-ringing the doorbell does nothing), and closing OBS then froze the machine | Open | `renga-test.sh` now runs OBS under `NVK_DEBUG=push_sync` to print the hung commands, and packs the report before closing OBS | Next run |
+| OBS Studio: GPU work stops about 3 s after startup (fence 13 of 14, no RC error, no pending acquire; re-ringing the doorbell does nothing), and closing OBS then froze the machine | Open | `renga-test.sh` now runs OBS under `NVK_DEBUG=push_sync` to print the hung commands, and packs the report before closing OBS | Next run |
 | Doorbells rung again after a 3 s CPU stall | Recovery and diagnosis for a lost-doorbell bug | Removed once hardware shows the submit fences prevent it. First evidence 2026-11-20: 15 OBS-pattern runs, about 3.3 million frames, no stall and no re-ring report | One OBS session |
 
 Not workarounds, though they may look like one: bounding GPFIFO reuse by the
