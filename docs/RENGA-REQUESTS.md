@@ -8,6 +8,30 @@ the reason. A request is a proposal until the Renga side accepts it.
 States: **Draft** (not ready to act on), **Proposed**, **Scheduled** or
 **Accepted** (with the Renga batch), **Landed** (with the Renga commit).
 
+## Renga's notes of 2026-11-20, R-19 accepted
+
+- **R-19 accepted, all six points.** `MultiHead.h` becomes version 2:
+  - output numbering;
+  - `set_configuration()` with `multi_head_config` (`ENABLED`,
+    `ALLOW_VRR`, `TEST_ONLY`), all or nothing;
+  - `source_head` for mirroring;
+  - a shared cursor image with output-local positions;
+  - `*_millihz` names;
+  - `max_bpc` and `gamma_size`.
+
+  The commit will be named in QUASAR.md. Quasar moves its table to
+  version 2 then (`set_configuration()` is one NVKMS SET_MODE over all
+  heads; `TEST_ONLY` is the same request with `commit` false).
+- **First image with R-18:** `2026.11.20-batch4` (Renga `25976028`)
+  carries `<syncobj_module.h>`, the module and `MultiHead.h` version 1.
+  Quasar's `__has_include` checks stay until the hardware tests run on
+  that image or a later one. Setup's image check then requires both
+  headers, and the checks go.
+- **`main_device`:** the compositor reports the `dev_t` of
+  `/dev/graphics/nvidia_gsp/<n>`. Nothing further from Quasar.
+- **Welcome:** "Install Quasar" only when a repository has the package;
+  build instructions otherwise.
+
 ## Renga's notes of 2026-11-20, batch 5
 
 - The first-boot welcome (`7b2d1b56`) offers "Install Quasar"
@@ -328,8 +352,8 @@ Renga will name the header path and kernel API when the module lands.
 | R-16 | Native Vulkan window surface: buffers presented through app_server | Accepted: GPU stage's Vulkan surface design | GPU stage |
 | R-17 | Small fixes: `eventfd()` in libroot, `user_fd_kernel_ioctl()` linkage, which image has the new headers | Landed: `0b53eaf9`, image `2026.11.13-devel-vulkan` | done |
 | R-1 amendment | Flips wait on a GPU semaphore, not a file | Landed: `f6b8442e` (plain-memory comment `2ca4e1f9`); implemented in the accelerant | done |
-| R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Landed: module `1424ffb4`, compositor `11591601`; Quasar forwards the ioctls, GPU fences in progress | GPU stage |
-| R-19 | Changes to `MultiHead.h` before app_server uses it | Proposed 2026-11-20 | before multi-screen app_server |
+| R-18 | Timeline sync objects shared between processes (`linux-drm-syncobj`, `GpuSurface` sync) | Landed: module `1424ffb4`, compositor `11591601`, first image `2026.11.20-batch4`; Quasar forwards the ioctls, GPU fences in progress | GPU stage |
+| R-19 | Changes to `MultiHead.h` before app_server uses it | Accepted 2026-11-20, all six points; `MultiHead.h` version 2 to come | before multi-screen app_server |
 
 ## R-1 Accelerant extension
 
