@@ -70,7 +70,7 @@ workarounds still in the tree, why each exists, and what removes it.
 | CPU waits in NVK's RM sync code use OS event objects and timed polling | No futex | `futex()` (R-3) | Renga F-49 |
 | `<add-ons/graphics/MultiHead.h>` optional at build time (`QUASAR_HAVE_MULTI_HEAD`, `accelerant/NvMultiHead.h`) | Same image: the header landed on 2026-11-20 | The header required with the image check | A Renga image with the header |
 | `<syncobj_module.h>` optional at build time (`nvidia_gsp/nvidia/Syncobj.h`) | Image 143b8c30, used by the current hardware tests, predates Renga's syncobj module (`1424ffb4`) | The header required, and setup's image check asking for an image that has it | A Renga image with the module |
-| Doorbells rung again after a 3 s CPU stall | Recovery and diagnosis for a lost-doorbell bug | Removed once a hardware run shows the submit fences prevent it | A hardware run |
+| Doorbells rung again after a 3 s CPU stall | Recovery and diagnosis for a lost-doorbell bug | Removed once hardware shows the submit fences prevent it. First evidence 2026-11-20: 15 OBS-pattern runs, about 3.3 million frames, no stall and no re-ring report | One OBS session |
 
 Not workarounds, though they may look like one: bounding GPFIFO reuse by the
 channel fence instead of reading USERD `GPGet` (`0007`) is how NVIDIA's own
@@ -91,7 +91,7 @@ and (with R-6) hot-plug is the interface R-1 defines.
 | `tools/renga-test.sh`: build, install, run tests, collect one report archive | Smoke-tested on Linux | Timeout and collection paths only |
 | GPU presentation interface, driver half (R-1) | Syntax-checked | Follows Renga's `<add-ons/graphics/GpuPresent.h>` (`744fa9b4`); `wait_fd` and repeating vblank events implemented; events on one eventfd; see Display |
 | `nvkms_get_per_open_data()` (second-descriptor NVKMS ioctls) | Syntax-checked | Was `return NULL` |
-| NVK: fence the USERD `GPPut` write and the doorbell; ring stalled channels again and report it | Syntax-checked | Candidate for the OBS hang |
+| NVK: fence the USERD `GPPut` write and the doorbell; ring stalled channels again and report it | Tested on Renga 2026-11-20 | `egl-surfaceless-threads` (OBS's GL pattern) passes in every configuration: about 10,500 fps uncapped, a steady 30 fps paced, pbuffers too, with no stall reports. The test used to hang before this fix. Still to confirm with OBS itself |
 | DRM sync object ioctls forwarded to Renga's `syncobj` module on every Quasar descriptor (R-18), one handle table per open descriptor | Syntax-checked against Renga a1a83da2, with and without the header | Not run: needs an image with the module |
 | Several displays: Renga's `MultiHead.h` table (version 1) on NVKMS, outputs numbered as R-19 proposes, hardware heads assigned per output and mapped for `GpuPresent.h`, hot-plug from NVKMS's dpy events | Syntax-checked against Renga a1a83da2; cursor test passes | app_server does not call it yet; not run. MST displays, one-call configurations and VRR at mode set wait for R-19 |
 | RM caching type `UNCACHED_WEAK` maps uncached, not write-back | Syntax-checked | `to_haiku_cache_type()` fell through to 0 for it; unknown types now map uncached with a log line |
