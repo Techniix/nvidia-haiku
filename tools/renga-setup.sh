@@ -11,8 +11,8 @@
 #   2. Python modules Mesa's generators need (mako, PyYAML).
 #   3. LLVM with clang, which NVK's internal shaders are compiled with.
 #   4. The submodules (git submodule update --init).
-#   5. libglvnd, libclc and SPIRV-LLVM-Translator, built into deps.<arch>
-#      by tools/build-glvnd-deps.sh and tools/build-clc-deps.sh. These take
+#   5. libglvnd, libclc, SPIRV-LLVM-Translator and SPIRV-Tools, built into deps.<arch>
+#      by tools/build-glvnd-deps.sh, build-clc-deps.sh and build-spirv-tools.sh. These take
 #      the longest (libclc and the translator build against LLVM); they are
 #      skipped when already built.
 #
@@ -134,15 +134,13 @@ done
 # its meson.build asks for, and what to ask pkgman for when one is missing.
 # The list is the set of required dependencies from a complete NVK
 # configure on Renga; a fresh install stopped at the first of them
-# (SPIRV-Tools, which 26.3 requires whenever CLC is built, as NVK does).
-#   SPIRV-Tools          mesa_clc and NVK's CL kernels
+# (SPIRV-Tools, checked separately below).
 #   wayland-*            -Dplatforms=wayland (Mesa's WSI common code);
 #                        wayland-scanner.pc is in wayland_devel too
 # Build.sh also adds the deps.<arch> directories to Mesa's pkg-config path,
 # so look there too.
 pcPath="$deps/lib/pkgconfig:$deps/share/pkgconfig:$deps/develop/lib/pkgconfig"
 pcMods=(
-	"SPIRV-Tools >= 2024.1|devel:libSPIRV_Tools"
 	"wayland-protocols >= 1.49|wayland_protocols"
 	"wayland-client >= 1.18|devel:libwayland_client"
 	"wayland-server >= 1.18|devel:libwayland_server"
@@ -153,6 +151,17 @@ if have pkg-config; then
 		PKG_CONFIG_PATH="$pcPath${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
 			pkg-config --exists "${m%%|*}" || missing+=("${m##*|}")
 	done
+fi
+
+# SPIRV-Tools: Mesa 26.3 requires it whenever CLC is built, as NVK does.
+# The HaikuPorts repository has no package providing devel:libSPIRV_Tools
+# ("Name not found" on Renga 143b8c30), so tools/build-spirv-tools.sh
+# builds it into deps.<arch>, like libclc. An installed copy is used if
+# pkg-config finds one.
+spirvToolsOk=0
+if have pkg-config && PKG_CONFIG_PATH="$pcPath${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+		pkg-config --exists 'SPIRV-Tools >= 2024.1'; then
+	spirvToolsOk=1
 fi
 
 pyMissing=()
@@ -174,9 +183,10 @@ echo "LLVM and clang:   $([ $llvmOk = 1 ] && llvm-config --version || echo missi
 echo "Submodules:       $([ $submodulesOk = 1 ] && echo checked out || echo not all checked out)"
 echo "libglvnd:         $([ $glvndOk = 1 ] && echo built || echo not built)"
 echo "libclc, SPIRV-LLVM-Translator: $([ $clcOk = 1 ] && echo built || echo not built)"
+echo "SPIRV-Tools:      $([ $spirvToolsOk = 1 ] && echo present || echo not built)"
 
 if [ ${#missing[@]} -eq 0 ] && [ ${#pyMissing[@]} -eq 0 ] && [ $llvmOk = 1 ] && [ $mesonOld = 0 ] &&
-		[ $submodulesOk = 1 ] && [ $glvndOk = 1 ] && [ $clcOk = 1 ]; then
+		[ $submodulesOk = 1 ] && [ $glvndOk = 1 ] && [ $clcOk = 1 ] && [ $spirvToolsOk = 1 ]; then
 	echo; echo "Everything needed to build is in place."
 	exit 0
 fi
@@ -222,6 +232,9 @@ if [ $glvndOk = 0 ]; then
 fi
 if [ $clcOk = 0 ]; then
 	"$base/tools/build-clc-deps.sh" || fail "tools/build-clc-deps.sh failed"
+fi
+if [ $spirvToolsOk = 0 ]; then
+	"$base/tools/build-spirv-tools.sh" || fail "tools/build-spirv-tools.sh failed"
 fi
 echo
 echo "Done. Next: tools/renga-test.sh build"
