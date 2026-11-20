@@ -131,7 +131,7 @@ llvmOk=0
 if have llvm-config && have clang; then llvmOk=1; fi
 
 submodulesOk=1
-git -C "$base" submodule status 2>/dev/null | grep -q '^-' && submodulesOk=0
+"$base/tools/submodules.sh" check >/dev/null 2>&1 || submodulesOk=0
 
 glvndOk=0; [ -e "$deps/lib/pkgconfig/libglvnd.pc" ] && glvndOk=1
 clcOk=0; [ -e "$deps/share/pkgconfig/libclc.pc" ] && clcOk=1
@@ -183,7 +183,7 @@ for m in "${pyMissing[@]}"; do
 		fail "could not install the Python module $m"
 done
 if [ $submodulesOk = 0 ]; then
-	git -C "$base" submodule update --init || fail "git submodule update failed"
+	"$base/tools/submodules.sh" update || fail "git submodule update failed"
 fi
 if [ $glvndOk = 0 ]; then
 	"$base/tools/build-glvnd-deps.sh" || fail "tools/build-glvnd-deps.sh failed"

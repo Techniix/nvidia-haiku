@@ -2,14 +2,17 @@
 	path = mesa-nvk
 	url = https://github.com/Techniix/mesa.git
 	branch = renga-26.3
+	shallow = true
 [submodule "mesa-zink"]
 	path = mesa-zink
 	url = https://github.com/X547/mesa.git
 	branch = haiku-zink
+	shallow = true
 [submodule "open-gpu-kernel-modules"]
 	path = open-gpu-kernel-modules
 	url = https://github.com/Techniix/open-gpu-kernel-modules.git
 	branch = 570.133.07-renga
+	shallow = true
 [submodule "VideoStreamsWsi"]
 	path = VideoStreamsWsi
 	url = https://github.com/X547/VideoStreamsWsi.git

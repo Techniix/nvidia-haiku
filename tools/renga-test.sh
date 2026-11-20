@@ -186,8 +186,7 @@ do_build() {
 	fi
 
 	say "Updating submodules"
-	git submodule sync >"$report/build-submodules.txt" 2>&1
-	if ! git submodule update --init >>"$report/build-submodules.txt" 2>&1; then
+	if ! "$here/submodules.sh" update >"$report/build-submodules.txt" 2>&1; then
 		echo "Submodule update failed; see $report/build-submodules.txt" >&2
 		pack_report
 		exit 1
