@@ -59,6 +59,9 @@ tools=(
 	"flex cmd:flex"
 	"zip cmd:zip"
 	"strings cmd:strings"
+	"rustc cmd:rustc"
+	"bindgen cmd:bindgen"
+	"cbindgen cmd:cbindgen"
 )
 missing=()
 for t in "${tools[@]}"; do
@@ -126,6 +129,31 @@ for lib in zstd z expat; do
 	done
 	[ $found = 1 ] || missing+=("devel:lib$lib")
 done
+
+# Libraries Mesa 26.3 finds through pkg-config, with the minimum versions
+# its meson.build asks for, and what to ask pkgman for when one is missing.
+# The list is the set of required dependencies from a complete NVK
+# configure on Renga; a fresh install stopped at the first of them
+# (SPIRV-Tools, which 26.3 requires whenever CLC is built, as NVK does).
+#   SPIRV-Tools          mesa_clc and NVK's CL kernels
+#   wayland-*            -Dplatforms=wayland (Mesa's WSI common code);
+#                        wayland-scanner.pc is in wayland_devel too
+# Build.sh also adds the deps.<arch> directories to Mesa's pkg-config path,
+# so look there too.
+pcPath="$deps/lib/pkgconfig:$deps/share/pkgconfig:$deps/develop/lib/pkgconfig"
+pcMods=(
+	"SPIRV-Tools >= 2024.1|devel:libSPIRV_Tools"
+	"wayland-protocols >= 1.49|wayland_protocols"
+	"wayland-client >= 1.18|devel:libwayland_client"
+	"wayland-server >= 1.18|devel:libwayland_server"
+	"wayland-scanner|devel:libwayland_client"
+)
+if have pkg-config; then
+	for m in "${pcMods[@]}"; do
+		PKG_CONFIG_PATH="$pcPath${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+			pkg-config --exists "${m%%|*}" || missing+=("${m##*|}")
+	done
+fi
 
 pyMissing=()
 python3 -c 'import mako' 2>/dev/null || pyMissing+=(mako)
