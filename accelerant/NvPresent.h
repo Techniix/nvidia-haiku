@@ -51,8 +51,20 @@ public:
 		NvKmsDevice *kmsDev;
 		NvKmsDispHandle disp;
 		NvU32 headCount;
+		// head: a hardware head.
 		NvHandle (*scanoutMemory)(NvU32 head, gpu_buffer_desc *desc);
+		// <GpuPresent.h>'s head arguments are display outputs (MultiHead.h
+		// numbering); NVKMS's are hardware heads. ~0u: no such output, or
+		// it is off / the head drives no output.
+		uint32 (*hwHeadOf)(uint32 output);
+		uint32 (*outputOf)(uint32 hwHead);
+		// NVKMS reported a display change (hot-plug, EDID). Called from the
+		// event thread with NvPresent's lock held: it must only signal.
+		void (*hotplug)();
 	};
+
+	// For the hook table: hardware head of an output, ~0u if none.
+	uint32 HwHeadOf(uint32 output) const {return fContext.hwHeadOf(output);}
 
 	explicit NvPresent(const Context &context);
 	~NvPresent();

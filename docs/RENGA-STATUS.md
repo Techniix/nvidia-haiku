@@ -68,6 +68,7 @@ workarounds still in the tree, why each exists, and what removes it.
 | ~~Quasar's own declarations of `user_fd_kernel_ioctl()`~~ | | Removed: `<fs/fd.h>` is right since Renga `0b53eaf9` | — |
 | ~~Copies of `GpuPresent.h` and `HardwareCursor.h`~~ | | Removed: Renga images from `2026.11.13-devel-vulkan` install both; `renga-setup.sh` checks for them | — |
 | CPU waits in NVK's RM sync code use OS event objects and timed polling | No futex | `futex()` (R-3) | Renga F-49 |
+| `<add-ons/graphics/MultiHead.h>` optional at build time (`QUASAR_HAVE_MULTI_HEAD`, `accelerant/NvMultiHead.h`) | Same image: the header landed on 2026-11-20 | The header required with the image check | A Renga image with the header |
 | `<syncobj_module.h>` optional at build time (`nvidia_gsp/nvidia/Syncobj.h`) | Image 143b8c30, used by the current hardware tests, predates Renga's syncobj module (`1424ffb4`) | The header required, and setup's image check asking for an image that has it | A Renga image with the module |
 | Doorbells rung again after a 3 s CPU stall | Recovery and diagnosis for a lost-doorbell bug | Removed once a hardware run shows the submit fences prevent it | A hardware run |
 
@@ -92,6 +93,7 @@ and (with R-6) hot-plug is the interface R-1 defines.
 | `nvkms_get_per_open_data()` (second-descriptor NVKMS ioctls) | Syntax-checked | Was `return NULL` |
 | NVK: fence the USERD `GPPut` write and the doorbell; ring stalled channels again and report it | Syntax-checked | Candidate for the OBS hang |
 | DRM sync object ioctls forwarded to Renga's `syncobj` module on every Quasar descriptor (R-18), one handle table per open descriptor | Syntax-checked against Renga a1a83da2, with and without the header | Not run: needs an image with the module |
+| Several displays: Renga's `MultiHead.h` table (version 1) on NVKMS, outputs numbered as R-19 proposes, hardware heads assigned per output and mapped for `GpuPresent.h`, hot-plug from NVKMS's dpy events | Syntax-checked against Renga a1a83da2; cursor test passes | app_server does not call it yet; not run. MST displays, one-call configurations and VRR at mode set wait for R-19 |
 | RM caching type `UNCACHED_WEAK` maps uncached, not write-back | Syntax-checked | `to_haiku_cache_type()` fell through to 0 for it; unknown types now map uncached with a log line |
 
 ## Inherited from `rtx5070-event-sync`

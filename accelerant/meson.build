@@ -21,6 +21,7 @@ shared_module('nvidia_gsp',
 	'NvUtils.cpp',
 	'NvKmsBitmap.cpp',
 	'NvPresent.cpp',
+	'NvMultiHead.cpp',
 	dependencies: [
 		dep_nvrm_client_cpp,
 		dep_nvkms_client_cpp,

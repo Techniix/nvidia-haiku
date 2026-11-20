@@ -53,7 +53,8 @@ CC="${CC:-gcc}"
 flags="-O1 -g -U_FORTIFY_SOURCE $defs $san $inc"
 
 $CC $flags -c "$NV_SRC/src/common/shared/nvstatus/nvstatus.c" -o "$out/nvstatus.o"
-srcs="$repo/accelerant/Accelerant.cpp $repo/accelerant/NvKmsBitmap.cpp \
+srcs="$repo/accelerant/Accelerant.cpp $repo/accelerant/NvMultiHead.cpp \
+ $repo/accelerant/NvKmsBitmap.cpp \
  $repo/accelerant/NvUtils.cpp $repo/nvrm_cpp_sdk/ErrorUtils.cpp \
  $repo/nvrm_cpp_sdk/NvRmApi.cpp $repo/nvrm_cpp_sdk/NvRmDevice.cpp \
  $repo/nvrm_cpp_sdk/NvKmsApi.cpp $repo/nvrm_cpp_sdk/NvKmsDevice.cpp \

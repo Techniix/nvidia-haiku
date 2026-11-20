@@ -14,6 +14,8 @@
 #include "NvUtils.h"
 #include "NvKmsBitmap.h"
 #include "NvPresent.h"
+#include "NvModes.h"
+#include "NvMultiHead.h"
 
 // Renga's optional cursor size query, B_GET_CURSOR_MAX_SIZE (F-59, aa1cd0da).
 #include <add-ons/graphics/HardwareCursor.h>
@@ -33,83 +35,6 @@ static inline status_t ToErrorCode(const std::system_error &ex)
 		return ex.code().value();
 	}
 	return B_ERROR;
-}
-
-
-static uint32 CalcRefreshRate(const display_timing &haikuModeTimings)
-{
-	uint64 multiplier = (B_TIMING_INTERLACED & haikuModeTimings.flags) != 0 ? 2000000LL : 1000000LL;
-	return (uint32)(multiplier * haikuModeTimings.pixel_clock / ((uint64)haikuModeTimings.h_total * haikuModeTimings.v_total));
-}
-
-static display_timing ToHaikuModeTimings(const NvModeTimings &nvKmsModeTimings) {
-	display_timing haikuModeTimings {
-		.pixel_clock  = nvKmsModeTimings.pixelClockHz / 1000,
-		.h_display    = nvKmsModeTimings.hVisible,
-		.h_sync_start = nvKmsModeTimings.hSyncStart,
-		.h_sync_end   = nvKmsModeTimings.hSyncEnd,
-		.h_total      = nvKmsModeTimings.hTotal,
-		.v_display    = nvKmsModeTimings.vVisible,
-		.v_sync_start = nvKmsModeTimings.vSyncStart,
-		.v_sync_end   = nvKmsModeTimings.vSyncEnd,
-		.v_total      = nvKmsModeTimings.vTotal,
-		.flags        =
-			(nvKmsModeTimings.interlaced ? B_TIMING_INTERLACED : 0) |
-			(nvKmsModeTimings.hSyncPos ? B_POSITIVE_HSYNC : 0) |
-			(nvKmsModeTimings.vSyncPos ? B_POSITIVE_VSYNC : 0),
-	};
-	return haikuModeTimings;
-}
-
-static NvModeTimings ToNvKmsModeTimings(const display_timing &haikuModeTimings) {
-	NvModeTimings nvKmsModeTimings {
-		.RRx1k        = CalcRefreshRate(haikuModeTimings),
-		.pixelClockHz = haikuModeTimings.pixel_clock * 1000,
-		.hVisible     = haikuModeTimings.h_display,
-		.hSyncStart   = haikuModeTimings.h_sync_start,
-		.hSyncEnd     = haikuModeTimings.h_sync_end,
-		.hTotal       = haikuModeTimings.h_total,
-		.vVisible     = haikuModeTimings.v_display,
-		.vSyncStart   = haikuModeTimings.v_sync_start,
-		.vSyncEnd     = haikuModeTimings.v_sync_end,
-		.vTotal       = haikuModeTimings.v_total,
-		.interlaced   = (B_TIMING_INTERLACED & haikuModeTimings.flags) != 0,
-		.hSyncPos     = (B_POSITIVE_HSYNC & haikuModeTimings.flags) != 0,
-		.hSyncNeg     = (B_POSITIVE_HSYNC & haikuModeTimings.flags) == 0,
-		.vSyncPos     = (B_POSITIVE_VSYNC & haikuModeTimings.flags) != 0,
-		.vSyncNeg     = (B_POSITIVE_VSYNC & haikuModeTimings.flags) == 0,
-	};
-	return nvKmsModeTimings;
-}
-
-static display_mode ToHaikuMode(const NvKmsMode &nvKmsMode) {
-	display_mode haikuMode {
-		.timing = ToHaikuModeTimings(nvKmsMode.timings),
-		.space = B_RGB32,
-		.virtual_width  = nvKmsMode.timings.hVisible,
-		.virtual_height = nvKmsMode.timings.vVisible,
-	};
-	return haikuMode;
-}
-
-static NvKmsMode ToNvKmsMode(const display_mode &haikuMode) {
-	NvKmsMode nvKmsMode {
-		.timings = ToNvKmsModeTimings(haikuMode.timing),
-	};
-	return nvKmsMode;
-}
-
-
-static NvKmsCompositionParams CursorCompParams()
-{
-	// app_server's cursor bitmaps are B_RGBA32 that its software cursor
-	// blends as premultiplied (HWInterface::_DrawCursor), so blend the same
-	// way here and the two look identical.
-	NvKmsCompositionParams params {};
-	params.colorKeySelect = NVKMS_COMPOSITION_COLOR_KEY_SELECT_DISABLE;
-	params.blendingMode[0] = NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA;
-	params.blendingMode[1] = NVKMS_COMPOSITION_BLENDING_MODE_PREMULT_ALPHA;
-	return params;
 }
 
 
@@ -156,6 +81,14 @@ private:
 	std::unique_ptr<NvPresent> fPresent;
 	bool fIsClone = false;
 
+#if QUASAR_HAVE_MULTI_HEAD
+	// Several displays (<add-ons/graphics/MultiHead.h>), created on first
+	// request; output 0 is this accelerant's classic display.
+	std::unique_ptr<NvMultiHead> fMultiHead;
+#endif
+
+	void CursorImageChanged();
+
 	NvAccelerant(int devFd);
 
 	NVDpyId FindConnectedDisplay(NVDpyIdList validDpys);
@@ -170,6 +103,7 @@ private:
 
 public:
 	static NvAccelerant *Instance() {return sInstance;}
+	~NvAccelerant();
 
 	static void Init(int fd);
 	static void Clone(void* data);
@@ -201,6 +135,12 @@ public:
 
 	const gpu_present_hooks *PresentHooks();
 	NvHandle ScanoutMemory(NvU32 head, gpu_buffer_desc *desc);
+	uint32 HwHeadOf(uint32 output) const;
+	uint32 OutputOf(uint32 hwHead) const;
+
+#if QUASAR_HAVE_MULTI_HEAD
+	NvMultiHead *MultiHead();
+#endif
 };
 
 
@@ -327,6 +267,16 @@ void NvAccelerant::Clone(void* data)
 
 	sInstance = new NvAccelerant(devFd.Get());
 	sInstance->fIsClone = true;
+}
+
+NvAccelerant::~NvAccelerant()
+{
+	// The presenter's event thread calls into the multi-head table (hot-plug,
+	// head mapping): stop it first.
+	fPresent.reset();
+#if QUASAR_HAVE_MULTI_HEAD
+	fMultiHead.reset();
+#endif
 }
 
 void NvAccelerant::Uninit()
@@ -843,6 +793,9 @@ void NvAccelerant::SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uin
 	fCursor = std::move(newCursor);
 	fCursorHotSpot.x = hotX;
 	fCursorHotSpot.y = hotY;
+	// The other outputs switch before fRetiredCursor is freed (at the next
+	// change), so no output ever shows a freed surface.
+	CursorImageChanged();
 	if (fCursorVisible) {
 		ApplyCursorPosition();
 	}
@@ -883,6 +836,19 @@ const gpu_present_hooks *NvAccelerant::PresentHooks()
 			.scanoutMemory = [](NvU32 head, gpu_buffer_desc *desc) {
 				return NvAccelerant::Instance()->ScanoutMemory(head, desc);
 			},
+			.hwHeadOf = [](uint32 output) {
+				return NvAccelerant::Instance()->HwHeadOf(output);
+			},
+			.outputOf = [](uint32 hwHead) {
+				return NvAccelerant::Instance()->OutputOf(hwHead);
+			},
+			.hotplug = []() {
+#if QUASAR_HAVE_MULTI_HEAD
+				NvAccelerant *accelerant = NvAccelerant::Instance();
+				if (accelerant != nullptr && accelerant->fMultiHead)
+					accelerant->fMultiHead->Hotplug();
+#endif
+			},
 		};
 		fPresent = std::make_unique<NvPresent>(context);
 		NvPresent::SetInstance(fPresent.get());
@@ -890,11 +856,18 @@ const gpu_present_hooks *NvAccelerant::PresentHooks()
 	return NvPresent::Hooks();
 }
 
-// The memory on the head driven by this accelerant: the framebuffer that
-// app_server draws into. Other heads are not driven yet (multihead).
+// The memory a hardware head scans out: the classic frame buffer on fHead,
+// or the frame buffer of the multi-head output on another head.
 NvHandle NvAccelerant::ScanoutMemory(NvU32 head, gpu_buffer_desc *desc)
 {
-	if (head != fHead || !fFramebuffer.IsSet())
+	if (head != fHead) {
+#if QUASAR_HAVE_MULTI_HEAD
+		if (fMultiHead)
+			return fMultiHead->ScanoutMemory(fMultiHead->OutputOf(head), desc);
+#endif
+		return 0;
+	}
+	if (!fFramebuffer.IsSet())
 		return 0;
 	*desc = {};
 	desc->width = fFramebuffer.Width();
@@ -904,6 +877,62 @@ NvHandle NvAccelerant::ScanoutMemory(NvU32 head, gpu_buffer_desc *desc)
 	desc->modifier = 0;	// linear
 	desc->offset = 0;
 	return fFramebuffer.Memory().Get();
+}
+
+
+// Output numbers (MultiHead.h) <-> hardware heads. Without the multi-head
+// table only output 0, the classic display on fHead, exists.
+uint32 NvAccelerant::HwHeadOf(uint32 output) const
+{
+#if QUASAR_HAVE_MULTI_HEAD
+	if (fMultiHead)
+		return fMultiHead->HwHeadOf(output);
+#endif
+	return output == 0 ? fHead : kNvNoHead;
+}
+
+uint32 NvAccelerant::OutputOf(uint32 hwHead) const
+{
+#if QUASAR_HAVE_MULTI_HEAD
+	if (fMultiHead)
+		return fMultiHead->OutputOf(hwHead);
+#endif
+	return hwHead == fHead ? 0 : kNvNoHead;
+}
+
+#if QUASAR_HAVE_MULTI_HEAD
+NvMultiHead *NvAccelerant::MultiHead()
+{
+	// Like GPU presentation, only app_server's instance drives displays.
+	if (fIsClone)
+		return nullptr;
+	if (!fMultiHead) {
+		fMultiHead = std::make_unique<NvMultiHead>(NvMultiHead::Context {
+			.rmDev = &fRmDev,
+			.kms = &fKms,
+			.kmsDev = &fKmsDev,
+			.disp = fDisp,
+			.classicDpy = fDpyId,
+			.classicHwHead = fHead,
+		});
+		CursorImageChanged();
+		// Hot-plug events arrive on the presenter's NVKMS event thread.
+		PresentHooks();
+	}
+	return fMultiHead.get();
+}
+
+#endif	// QUASAR_HAVE_MULTI_HEAD
+
+// The cursor image is the classic hooks', shared by every output.
+void NvAccelerant::CursorImageChanged()
+{
+#if QUASAR_HAVE_MULTI_HEAD
+	if (!fMultiHead)
+		return;
+	fMultiHead->SetCursorImage(fCursor.IsSet() ? fCursor.Surface().Get() : 0,
+		fCursorHotSpot.x, fCursorHotSpot.y);
+#endif
 }
 
 
@@ -973,6 +1002,157 @@ static bool HardwareCursorEnabled()
 	}
 	return sEnabled != 0;
 }
+
+
+#if QUASAR_HAVE_MULTI_HEAD
+// #pragma mark - multi-head table
+
+
+// Renga's <add-ons/graphics/MultiHead.h>. Output 0 is the classic display:
+// its mode, frame buffer, DPMS and cursor go through the classic code, so
+// the classic hooks and the table always agree. The other outputs are
+// NvMultiHead's.
+#define MULTI_CALL(expr) \
+	do { \
+		try { \
+			return (expr); \
+		} catch (const std::system_error &ex) { \
+			debug_printf("[!] nvidia_gsp: multi-head: %s\n", ex.what()); \
+			return ToErrorCode(ex); \
+		} catch (...) { \
+			return (status_t)B_ERROR; \
+		} \
+	} while (0)
+
+static NvMultiHead *Multi()
+{
+	return NvAccelerant::Instance()->MultiHead();
+}
+
+template<typename F>
+static status_t ClassicCall(F f)
+{
+	f();
+	return B_OK;
+}
+
+static uint32 mh_count_heads()
+{
+	try {
+		return Multi()->Count();
+	} catch (...) {
+		return 1;
+	}
+}
+
+static status_t mh_get_head_info(uint32 head, multi_head_info *info)
+{
+	MULTI_CALL(Multi()->GetInfo(head, info));
+}
+
+static uint32 mh_mode_count(uint32 head)
+{
+	try {
+		if (head == 0)
+			return NvAccelerant::Instance()->ModeCount();
+		return Multi()->ModeCount(head);
+	} catch (...) {
+		return 0;
+	}
+}
+
+static status_t mh_get_mode_list(uint32 head, display_mode *modes)
+{
+	if (head == 0)
+		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->GetModeList(modes);}));
+	MULTI_CALL(Multi()->GetModeList(head, modes));
+}
+
+static status_t mh_set_head_mode(uint32 head, const display_mode *mode)
+{
+	if (head == 0) {
+		// The classic display has no "off": app_server uses DPMS for it.
+		if (mode == nullptr)
+			return B_NOT_SUPPORTED;
+		display_mode copy = *mode;
+		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->SetDisplayMode(&copy);}));
+	}
+	MULTI_CALL(Multi()->SetMode(head, mode));
+}
+
+static status_t mh_get_head_mode(uint32 head, display_mode *mode)
+{
+	if (head == 0)
+		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->GetDisplayMode(mode);}));
+	MULTI_CALL(Multi()->GetMode(head, mode));
+}
+
+static status_t mh_get_frame_buffer_config(uint32 head, frame_buffer_config *config)
+{
+	if (head == 0)
+		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->GetFrameBufferConfig(config);}));
+	MULTI_CALL(Multi()->GetFrameBufferConfig(head, config));
+}
+
+static status_t mh_set_head_dpms(uint32 head, uint32 dpmsFlags)
+{
+	if (head == 0)
+		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->SetDpmsMode(dpmsFlags);}));
+	MULTI_CALL(Multi()->SetDpms(head, dpmsFlags));
+}
+
+static status_t mh_move_head_cursor(uint32 head, uint16 x, uint16 y)
+{
+	if (!HardwareCursorEnabled())
+		return B_NOT_SUPPORTED;
+	if (head == 0)
+		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->MoveCursor(x, y);}));
+	MULTI_CALL(Multi()->MoveCursor(head, x, y));
+}
+
+static status_t mh_show_head_cursor(uint32 head, bool visible)
+{
+	if (!HardwareCursorEnabled())
+		return B_NOT_SUPPORTED;
+	if (head == 0)
+		MULTI_CALL(ClassicCall([&] {NvAccelerant::Instance()->ShowCursor(visible);}));
+	MULTI_CALL(Multi()->ShowCursor(head, visible));
+}
+
+static status_t mh_get_head_edid(uint32 head, void *data, size_t *size)
+{
+	MULTI_CALL(Multi()->GetEdid(head, data, size));
+}
+
+static int mh_event_fd()
+{
+	try {
+		return Multi()->EventFd();
+	} catch (...) {
+		return -1;
+	}
+}
+
+static const multi_head_hooks *MultiHeadHooks()
+{
+	static const multi_head_hooks sHooks = {
+		.version = B_MULTI_HEAD_VERSION,
+		.count_heads = mh_count_heads,
+		.get_head_info = mh_get_head_info,
+		.mode_count = mh_mode_count,
+		.get_mode_list = mh_get_mode_list,
+		.set_head_mode = mh_set_head_mode,
+		.get_head_mode = mh_get_head_mode,
+		.get_frame_buffer_config = mh_get_frame_buffer_config,
+		.set_head_dpms = mh_set_head_dpms,
+		.move_head_cursor = mh_move_head_cursor,
+		.show_head_cursor = mh_show_head_cursor,
+		.get_head_edid = mh_get_head_edid,
+		.event_fd = mh_event_fd,
+	};
+	return &sHooks;
+}
+#endif	// QUASAR_HAVE_MULTI_HEAD
 
 
 _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
@@ -1345,6 +1525,21 @@ _EXPORT void *get_accelerant_hook(uint32 feature, void *data)
 				return nullptr;
 			}
 		}
+
+#if QUASAR_HAVE_MULTI_HEAD
+		// Renga's several-displays table (provisional, MultiHead.h; R-19).
+		// The table itself; NULL for clones, which drive no display.
+		case B_MULTI_HEAD_HOOKS: {
+			try {
+				if (NvAccelerant::Instance()->MultiHead() == nullptr)
+					return nullptr;
+				return (void*)MultiHeadHooks();
+			} catch (const std::system_error &ex) {
+				debug_printf("[!] nvidia_gsp: multi-head table unavailable: %s\n", ex.what());
+				return nullptr;
+			}
+		}
+#endif
 
 		default:
 			return nullptr;

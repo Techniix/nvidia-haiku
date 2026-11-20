@@ -71,7 +71,10 @@ NvPresent::NvPresent(const Context &context):
 	}
 
 	NvKmsDeclareEventInterestParams params {};
-	params.request.interestMask = 1U << NVKMS_EVENT_TYPE_FLIP_OCCURRED;
+	params.request.interestMask = (1U << NVKMS_EVENT_TYPE_FLIP_OCCURRED)
+		| (1U << NVKMS_EVENT_TYPE_DPY_CHANGED)
+		| (1U << NVKMS_EVENT_TYPE_DYNAMIC_DPY_CONNECTED)
+		| (1U << NVKMS_EVENT_TYPE_DYNAMIC_DPY_DISCONNECTED);
 	fEventsDeclared = fContext.kms->Control(NVKMS_IOCTL_DECLARE_EVENT_INTEREST,
 		&params, sizeof(params)) >= 0;
 
@@ -703,7 +706,7 @@ NvPresent::CompleteFlipNow(uint32 head, uint32 plane, PlaneState &state,
 {
 	gpu_present_event event {};
 	event.type = B_GPU_EVENT_FLIP_COMPLETE;
-	event.head = head;
+	event.head = fContext.outputOf(head);
 	event.plane = plane;
 	event.user_data = userData;
 	event.time = system_time();
@@ -898,7 +901,7 @@ NvPresent::EventThread()
 			if (taken.count > 0) {
 				gpu_present_event event {};
 				event.type = B_GPU_EVENT_VBLANK;
-				event.head = head;
+				event.head = fContext.outputOf(head);
 				event.time = taken.time;
 				fEvents.push_back(event);
 				signal = true;
@@ -950,7 +953,7 @@ NvPresent::EventThread()
 					waiting[i].plane);
 				gpu_present_event done {};
 				done.type = B_GPU_EVENT_FLIP_COMPLETE;
-				done.head = waiting[i].head;
+				done.head = fContext.outputOf(waiting[i].head);
 				done.plane = waiting[i].plane;
 				done.user_data = state->waitParams.user_data;
 				done.time = system_time();
@@ -970,9 +973,10 @@ NvPresent::EventThread()
 
 // Move NVKMS's queued events into fEvents. A FLIP_OCCURRED event says that
 // some flip on (head, layer) with "awaken" completed; the notifier of the
-// pending flip says whether it was ours. Other event types (display hot-plug,
-// attributes) are not this interface's business and are dropped; the
-// accelerant does not otherwise read this queue.
+// pending flip says whether it was ours. Display changes (hot-plug, EDID)
+// go to the multi-head table through context.hotplug. Other event types are
+// dropped; the accelerant does not otherwise read this queue, which is the
+// accelerant's only NVKMS client in app_server.
 void
 NvPresent::DrainKmsEvents()
 {
@@ -981,8 +985,18 @@ NvPresent::DrainKmsEvents()
 		if (fContext.kms->Control(NVKMS_IOCTL_GET_NEXT_EVENT, &params,
 				sizeof(params)) < 0 || !params.reply.valid)
 			break;
-		if (params.reply.event.eventType != NVKMS_EVENT_TYPE_FLIP_OCCURRED)
-			continue;
+		switch (params.reply.event.eventType) {
+			case NVKMS_EVENT_TYPE_FLIP_OCCURRED:
+				break;
+			case NVKMS_EVENT_TYPE_DPY_CHANGED:
+			case NVKMS_EVENT_TYPE_DYNAMIC_DPY_CONNECTED:
+			case NVKMS_EVENT_TYPE_DYNAMIC_DPY_DISCONNECTED:
+				if (fContext.hotplug != nullptr)
+					fContext.hotplug();
+				continue;
+			default:
+				continue;
+		}
 
 		uint32 head = params.reply.event.u.flipOccurred.head;
 		uint32 plane = params.reply.event.u.flipOccurred.layer;
@@ -996,7 +1010,7 @@ NvPresent::DrainKmsEvents()
 
 		gpu_present_event done {};
 		done.type = B_GPU_EVENT_FLIP_COMPLETE;
-		done.head = head;
+		done.head = fContext.outputOf(head);
 		done.plane = plane;
 		done.user_data = state->pendingUserData;
 		done.time = system_time();
@@ -1069,6 +1083,13 @@ NvPresent::SetInstance(NvPresent *present)
 }
 
 
+// <GpuPresent.h>'s head arguments are display outputs; NvPresent works in
+// hardware heads. An output that is off has no head: B_BAD_VALUE.
+#define PRESENT_HEAD(output) \
+	uint32 hwHead = sPresent != nullptr ? sPresent->HwHeadOf(output) : ~0u; \
+	if (sPresent != nullptr && hwHead == ~0u) \
+		return B_BAD_VALUE
+
 #define PRESENT_CALL(expr) \
 	do { \
 		if (sPresent == nullptr) \
@@ -1086,7 +1107,8 @@ NvPresent::SetInstance(NvPresent *present)
 static status_t
 hook_get_caps(uint32 head, gpu_present_caps *caps)
 {
-	PRESENT_CALL(sPresent->GetCaps(head, caps));
+	PRESENT_HEAD(head);
+	PRESENT_CALL(sPresent->GetCaps(hwHead, caps));
 }
 
 static status_t
@@ -1104,19 +1126,22 @@ hook_release_buffer(uint32 id)
 static status_t
 hook_flip(uint32 head, uint32 plane, uint32 id, const gpu_flip_params *params)
 {
-	PRESENT_CALL(sPresent->Flip(head, plane, id, params));
+	PRESENT_HEAD(head);
+	PRESENT_CALL(sPresent->Flip(hwHead, plane, id, params));
 }
 
 static status_t
 hook_disable_plane(uint32 head, uint32 plane)
 {
-	PRESENT_CALL(sPresent->DisablePlane(head, plane));
+	PRESENT_HEAD(head);
+	PRESENT_CALL(sPresent->DisablePlane(hwHead, plane));
 }
 
 static status_t
 hook_request_vblank(uint32 head, bool repeat)
 {
-	PRESENT_CALL(sPresent->RequestVblank(head, repeat));
+	PRESENT_HEAD(head);
+	PRESENT_CALL(sPresent->RequestVblank(hwHead, repeat));
 }
 
 static int
@@ -1134,7 +1159,8 @@ hook_next_event(gpu_present_event *event)
 static status_t
 hook_export_scanout(uint32 head, gpu_buffer_desc *desc)
 {
-	PRESENT_CALL(sPresent->ExportScanout(head, desc));
+	PRESENT_HEAD(head);
+	PRESENT_CALL(sPresent->ExportScanout(hwHead, desc));
 }
 
 
